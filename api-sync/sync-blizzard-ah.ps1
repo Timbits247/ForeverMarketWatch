@@ -596,10 +596,11 @@ if ($totalUpdated -eq 0 -and -not $Force) {
 # 3. Persist rolling local history JSON (native ConvertTo-Json avoids PSObject wrapper serialization quirks)
 $historyRoot | ConvertTo-Json -Depth 8 -Compress | Set-Content -Path $HistoryPath -Encoding UTF8
 
-# 4. Generate & write MarketFeedData.lua into repo AND live WoW AddOns folder
+# 4. Generate & write MarketFeedData.lua directly to the live WoW AddOns folder
+#    (Leaves the Git repo's MarketFeedData.lua untouched so GitHub Actions stays the
+#     single source of truth and `git pull` never hits merge conflicts.)
 $sourceLabel = "Blizzard API ($namespace, Ruleset #$rulesetId)"
 $luaContent = Export-MarketFeedLua $historyRoot $nowUnix $sourceLabel $prioritySet
-Set-Content -Path $RepoFeedLua -Value $luaContent -Encoding UTF8
 
 if ($wowPath) {
     $liveAddonDir = Join-Path $wowPath "Interface\AddOns\ForeverMarketWatch"
@@ -610,6 +611,8 @@ if ($wowPath) {
     } else {
         Write-SyncLog "Note: Live addon folder not found at $liveAddonDir — run install-addon.ps1 first." "Yellow"
     }
+} else {
+    Set-Content -Path $RepoFeedLua -Value $luaContent -Encoding UTF8
 }
 
 # Keep sync.log bounded (last 300 lines)
