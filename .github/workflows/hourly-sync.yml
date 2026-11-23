@@ -62,7 +62,10 @@ jobs:
         run: |
           git config user.name "ForeverMarketWatch Bot"
           git config user.email "bot@forevermarketwatch.local"
-          git add addon/ForeverMarketWatch/MarketFeedData.lua release/manifest.json cloud-sync/history.json
+          git add addon/ForeverMarketWatch/MarketFeedData.lua release/manifest.json
+          if [ -f cloud-sync/history.json ]; then
+            git add cloud-sync/history.json
+          fi
           if git diff --cached --quiet; then
             echo "No changes to publish."
           else

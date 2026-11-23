@@ -108,10 +108,10 @@ Compress-Archive -Path (Join-Path $FriendDir "*") -DestinationPath $zipPath -For
 Write-Host "Built installer ZIP: $zipPath" -ForegroundColor Green
 
 $dlDir = Join-Path $env:USERPROFILE "Downloads"
-if (Test-Path $dlDir) {
-    try {
+try {
+    if (Test-Path $dlDir) {
         $dlZip = Join-Path $dlDir "ForeverMarketWatch-Installer.zip"
         Copy-Item -Path $zipPath -Destination $dlZip -Force
         Write-Host "Also copied to Downloads: $dlZip" -ForegroundColor Green
-    } catch {}
-}
+    }
+} catch {}
