@@ -2,9 +2,9 @@
   "addonName": "ForeverMarketWatch",
   "addonVersion": "2.1.0",
   "addonHash": "2a5377236bdff1b9",
-  "feedSyncedAt": 1795433104,
-  "feedHash": "0a219729ec041da5",
-  "generatedAt": 1795436686,
+  "feedSyncedAt": 1795441938,
+  "feedHash": "bb96204e0952b8fa",
+  "generatedAt": 1795441942,
   "files": [
     "Analytics.lua",
     "Arbitrage.lua",
