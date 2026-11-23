@@ -1,0 +1,71 @@
+name: Hourly AH Price Sync & Addon Release
+
+on:
+  schedule:
+    # Blizzard typically publishes WoW: Forever snapshots around :25 past each hour.
+    - cron: "30 * * * *"
+  push:
+    branches: ["main"]
+    paths:
+      - "addon/ForeverMarketWatch/**"
+      - "!addon/ForeverMarketWatch/MarketFeedData.lua"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force re-download even if Blizzard returns 304 Not Modified"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fmw-cloud-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Refresh addon manifest (on code push)
+        if: github.event_name == 'push'
+        run: python3 cloud-sync/sync_blizzard_ah.py --manifest-only
+
+      - name: Sync Blizzard AH prices & refresh manifest (hourly / manual)
+        if: github.event_name != 'push'
+        env:
+          BNET_CLIENT_ID: ${{ secrets.BNET_CLIENT_ID }}
+          BNET_CLIENT_SECRET: ${{ secrets.BNET_CLIENT_SECRET }}
+          BNET_REGION: ${{ vars.BNET_REGION || 'us' }}
+          BNET_RULESET_ID: ${{ vars.BNET_RULESET_ID || '2' }}
+          BNET_HOUSES: ${{ vars.BNET_HOUSES || '113:Horde,110:Alliance' }}
+        run: |
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            python3 cloud-sync/sync_blizzard_ah.py --force
+          else
+            python3 cloud-sync/sync_blizzard_ah.py
+          fi
+
+      - name: Commit & publish updated feed / manifest
+        run: |
+          git config user.name "ForeverMarketWatch Bot"
+          git config user.email "bot@forevermarketwatch.local"
+          git add addon/ForeverMarketWatch/MarketFeedData.lua release/manifest.json cloud-sync/history.json
+          if git diff --cached --quiet; then
+            echo "No changes to publish."
+          else
+            git commit -m "chore: publish AH price snapshot & manifest [skip ci]"
+            git push
+          fi

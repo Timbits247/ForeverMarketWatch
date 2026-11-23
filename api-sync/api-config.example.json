@@ -1,0 +1,15 @@
+{
+  "clientId": "YOUR_BATTLENET_CLIENT_ID",
+  "clientSecret": "YOUR_BATTLENET_CLIENT_SECRET",
+  "region": "us",
+  "rulesetId": 2,
+  "rulesetName": "Normal",
+  "houses": [
+    {
+      "houseId": 113,
+      "faction": "Horde",
+      "name": "Horde Auction House"
+    }
+  ],
+  "trackAllItems": false
+}
