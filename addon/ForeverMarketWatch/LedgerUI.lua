@@ -105,9 +105,10 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
 
     local typeBtns = {}
     local typeDefs = {
-        { id = "ALL",  label = "All",   w = 30 },
-        { id = "BUY",  label = "Buys",  w = 40 },
-        { id = "SELL", label = "Sales", w = 42 },
+        { id = "ALL",  label = "All",   w = 28 },
+        { id = "BUY",  label = "Buys",  w = 38 },
+        { id = "SELL", label = "Sales", w = 40 },
+        { id = "FEE",  label = "Fees",  w = 38 },
     }
     for i = 1, #typeDefs do
         local def = typeDefs[i]
@@ -121,8 +122,8 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
         prev = b
     end
 
-    local searchBox, searchEB = NS.CreateEditBox(ctrlBar, 102, 22, "Filter item...")
-    searchBox:SetPoint("LEFT", prev, "RIGHT", 8, 0)
+    local searchBox, searchEB = NS.CreateEditBox(ctrlBar, 88, 22, "Filter...")
+    searchBox:SetPoint("LEFT", prev, "RIGHT", 6, 0)
     searchEB:SetScript("OnTextChanged", function(self)
         searchText = (self:GetText() or ""):lower():match("^%s*(.-)%s*$")
         frame:Refresh()
@@ -400,9 +401,13 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
             row.bg:SetColorTexture(bgC[1], bgC[2], bgC[3], bgC[4])
 
             local isBuy = (e.type == "BUY")
+            local isFee = (e.type == "FEE")
             if isBuy then
                 row.bar:SetColorTexture(NS.COLORS.BLUE[1], NS.COLORS.BLUE[2], NS.COLORS.BLUE[3], 1)
                 row.typeTxt:SetText("|cFF42A8FABUY|r")
+            elseif isFee then
+                row.bar:SetColorTexture(NS.COLORS.AMBER[1], NS.COLORS.AMBER[2], NS.COLORS.AMBER[3], 1)
+                row.typeTxt:SetText("|cFFFFA030FEE|r")
             else
                 row.bar:SetColorTexture(NS.COLORS.GREEN[1], NS.COLORS.GREEN[2], NS.COLORS.GREEN[3], 1)
                 row.typeTxt:SetText("|cFF38D972SELL|r")
@@ -414,20 +419,28 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
             row.nameTxt:SetTextColor(qr, qg, qb, 1)
             row.nameTxt:SetText(e.name or (e.itemID and ("Item #" .. tostring(e.itemID)) or "Unknown Item"))
 
-            if e.counterparty and e.counterparty ~= "" then
+            if isFee then
+                row.partyTxt:SetText(e.counterparty ~= "" and e.counterparty or "Lost Auction Deposit")
+            elseif e.counterparty and e.counterparty ~= "" then
                 row.partyTxt:SetText((isBuy and "From: " or "Buyer: ") .. e.counterparty)
             else
                 row.partyTxt:SetText(isBuy and "Auction House Purchase" or "Auction House Sale")
             end
 
             row.qtyTxt:SetText("x" .. tostring(e.qty or 1))
-            row.unitTxt:SetText(NS.FormatMoney(e.unitPrice or 0, true))
+            row.unitTxt:SetText(isFee and "|cFFFFA030Deposit|r" or NS.FormatMoney(e.unitPrice or 0, true))
 
             if isBuy then
                 row.totalTxt:SetText("|cFF42A8FA-" .. NS.FormatMoney(e.netTotal or e.gross or 0, true) .. "|r")
                 row.feeTxt:SetText("Spent")
                 row.gainTxt:SetText("|cFF8A7E6B--|r")
                 row.roiTxt:SetText("")
+            elseif isFee then
+                local dep = e.ahCut or e.netTotal or e.gross or 0
+                row.totalTxt:SetText("|cFFFFA030-" .. NS.FormatMoney(dep, true) .. "|r")
+                row.feeTxt:SetText("Lost Dep")
+                row.gainTxt:SetText("|cFFF55954-" .. NS.FormatMoney(dep, true) .. "|r")
+                row.roiTxt:SetText("|cFFFFA030Fee|r")
             else
                 row.totalTxt:SetText("|cFF38D972+" .. NS.FormatMoney(e.netTotal or 0, true) .. "|r")
                 row.feeTxt:SetText((e.ahCut and e.ahCut > 0) and ("Cut: " .. NS.FormatMoney(e.ahCut, true)) or "Net")

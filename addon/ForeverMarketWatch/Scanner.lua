@@ -26,6 +26,7 @@ local pendingBrowseSearchQuery = nil
 local queuedBrowseQueryToSend = nil
 local browseSearchTimeoutTimer = nil
 local lastSearchResultRows = nil
+local pendingOwnedPriceScan = false
 
 local ITEM_TIMEOUT_SECONDS = 4.0
 local MAX_RETRIES_PER_ITEM = 1
@@ -723,6 +724,243 @@ function Scanner:JumpToItemInAH(itemID, snipeInfo)
 end
 
 --------------------------------------------------------------------------------
+-- Quick "Post" / Sell My Inventory Helper + Owned Auction Undercut Scanner
+--------------------------------------------------------------------------------
+
+local function FindItemInPlayerBags(targetItemID)
+    if not targetItemID then return nil, nil end
+    local numSlotsFn = (C_Container and C_Container.GetContainerNumSlots) or GetContainerNumSlots
+    local getIDFn = (C_Container and C_Container.GetContainerItemID) or GetContainerItemID
+    if not numSlotsFn or not getIDFn then return nil, nil end
+
+    for bag = 0, 4 do
+        local slots = numSlotsFn(bag) or 0
+        for slot = 1, slots do
+            if getIDFn(bag, slot) == targetItemID then
+                return bag, slot
+            end
+        end
+    end
+    return nil, nil
+end
+
+function Scanner:JumpToSellItemInAH(itemID, sellInfo)
+    if not ahOpen or not AuctionHouseFrame or not AuctionHouseFrame:IsShown() then
+        NS.Print("Open the Auction House to post items for sale.")
+        return false
+    end
+    if not itemID then return false end
+
+    if isScanning then
+        self:StopScan("QUICK_POST")
+    end
+
+    NS:FireCallback("HIDE_AH_OVERLAY")
+
+    local itemName = ResolveItemNameForBuy(itemID) or ("Item #" .. tostring(itemID))
+    sellInfo = sellInfo or {}
+    local avgCost = tonumber(sellInfo.avgCost) or 0
+    local breakEven = tonumber(sellInfo.breakEven) or 0
+    local mktPrice = tonumber(sellInfo.mktPrice)
+    local watch = NS.DB and NS.DB:GetWatchItem(itemID) or nil
+    local sellTarget = watch and watch.sellTarget or nil
+
+    -- Suggest a safe listing price that respects your Break-Even floor
+    local suggested = nil
+    if sellTarget and sellTarget > 0 then
+        suggested = math.max(sellTarget, breakEven)
+    elseif mktPrice and mktPrice > 0 then
+        suggested = math.max(mktPrice, breakEven)
+    elseif breakEven > 0 then
+        suggested = math.ceil(breakEven * 1.15)
+    end
+
+    local warnStr = ""
+    if breakEven > 0 and mktPrice and mktPrice < breakEven then
+        warnStr = "  |cFFF55954(WAIT: AH min is BELOW break-even!)|r"
+    end
+
+    NS.Print(string.format(
+        "|cFF38D972[POST]|r %s (x%d) — Avg: %s | Break-Even: |cFFFFCC33%s|r | AH Min: %s | Suggest: |cFF38D972%s|r%s",
+        itemName,
+        sellInfo.qty or 1,
+        avgCost > 0 and NS.FormatMoney(avgCost, true) or "--",
+        breakEven > 0 and NS.FormatMoney(breakEven, true) or "--",
+        mktPrice and NS.FormatMoney(mktPrice, true) or "--",
+        suggested and NS.FormatMoney(suggested, true) or "--",
+        warnStr
+    ))
+
+    local bag, slot = FindItemInPlayerBags(itemID)
+
+    -- 1. Preferred: Jump straight to Auctionator's Selling tab
+    if AuctionatorTabs_Selling then
+        local ok = pcall(function()
+            AuctionatorTabs_Selling:Click()
+            if bag ~= nil and slot ~= nil and ItemLocation and ItemLocation.CreateFromBagAndSlot then
+                local loc = ItemLocation:CreateFromBagAndSlot(bag, slot)
+                if Auctionator and Auctionator.EventBus and Auctionator.Selling and Auctionator.Selling.Events and Auctionator.Selling.Events.BagItemClicked then
+                    local link = (C_Container and C_Container.GetContainerItemLink and C_Container.GetContainerItemLink(bag, slot)) or nil
+                    local info = (C_Container and C_Container.GetContainerItemInfo and C_Container.GetContainerItemInfo(bag, slot)) or nil
+                    Auctionator.EventBus:Fire({ name = "ForeverMarketWatch" }, Auctionator.Selling.Events.BagItemClicked, {
+                        itemLink   = link,
+                        itemID     = itemID,
+                        location   = loc,
+                        count      = (info and info.stackCount) or 1,
+                        iconTexture = (info and info.iconFileID) or NS.Compat.GetItemIconByID(itemID),
+                        itemName   = itemName,
+                        quality    = (info and info.quality) or 1,
+                        classId    = 0,
+                        auctionable = true,
+                    })
+                end
+            end
+        end)
+        if ok then
+            lastViewedItemID = itemID
+            return true
+        end
+    end
+
+    -- 2. Fallback (Blizzard native Sell tab)
+    if AuctionHouseFrame.SetDisplayMode and AuctionHouseFrameDisplayMode then
+        local maxStack = (C_Item and C_Item.GetItemMaxStackSizeByID and C_Item.GetItemMaxStackSizeByID(itemID)) or 1
+        local mode = (maxStack > 1 and AuctionHouseFrameDisplayMode.CommoditiesSell) or AuctionHouseFrameDisplayMode.ItemSell
+        if mode then
+            pcall(function()
+                AuctionHouseFrame:SetDisplayMode(mode)
+            end)
+        end
+    end
+    lastViewedItemID = itemID
+    return true
+end
+
+local function ProcessOwnedAuctionsUpdate()
+    if not C_AuctionHouse or not C_AuctionHouse.GetNumOwnedAuctions or not C_AuctionHouse.GetOwnedAuctionInfo then
+        return
+    end
+    local count = C_AuctionHouse.GetNumOwnedAuctions() or 0
+    local list = {}
+    local uniqueItemIDs = {}
+    local seenIDs = {}
+    local soldEnum = (Enum and Enum.AuctionStatus and Enum.AuctionStatus.Sold) or 1
+
+    for i = 1, count do
+        local info = C_AuctionHouse.GetOwnedAuctionInfo(i)
+        if info and info.status ~= soldEnum then
+            local itemID = info.itemKey and info.itemKey.itemID or nil
+            local qty = math.max(1, tonumber(info.quantity) or 1)
+            local rawBuyout = tonumber(info.buyoutAmount) or 0
+            local maxStack = (itemID and C_Item and C_Item.GetItemMaxStackSizeByID and C_Item.GetItemMaxStackSizeByID(itemID)) or 1
+
+            -- Modern C_AuctionHouse reports unit price in buyoutAmount for commodities, total buyout for gear/items
+            local unitPrice, totalBuyout
+            if maxStack > 1 then
+                unitPrice = rawBuyout
+                totalBuyout = rawBuyout * qty
+            else
+                totalBuyout = rawBuyout
+                unitPrice = (qty > 0) and math.floor((rawBuyout / qty) + 0.5) or rawBuyout
+            end
+
+            local liveName, _, liveQual, _, _, _, _, _, _, liveIcon = itemID and NS.Compat.GetItemInfo(itemID) or nil
+            local keyInfo = (info.itemKey and C_AuctionHouse.GetItemKeyInfo) and C_AuctionHouse.GetItemKeyInfo(info.itemKey) or nil
+            if itemID and not liveName then
+                NS.Compat.RequestLoadItemDataByID(itemID)
+            end
+
+            table.insert(list, {
+                auctionID       = info.auctionID,
+                itemID          = itemID,
+                name            = liveName or (keyInfo and keyInfo.itemName) or (itemID and ("Item #" .. tostring(itemID)) or "Auction"),
+                icon            = liveIcon or (keyInfo and keyInfo.iconFileID) or (itemID and NS.Compat.GetItemIconByID(itemID)) or 134400,
+                quality         = (liveQual ~= nil) and liveQual or (keyInfo and keyInfo.quality) or 1,
+                qty             = qty,
+                unitPrice       = unitPrice,
+                totalBuyout     = totalBuyout,
+                timeLeftSeconds = info.timeLeftSeconds,
+            })
+
+            if itemID and itemID > 0 and not seenIDs[itemID] then
+                seenIDs[itemID] = true
+                table.insert(uniqueItemIDs, itemID)
+            end
+        end
+    end
+
+    local playerName = (UnitName and UnitName("player")) or "Alt"
+    NS.DB:SetOwnedAuctions(playerName, list, time())
+
+    if pendingOwnedPriceScan then
+        pendingOwnedPriceScan = false
+        if #uniqueItemIDs > 0 and ahOpen and not NS.DB:IsDemoMode() then
+            if isScanning then
+                Scanner:StopScan("UNDERCUT_SCAN")
+            end
+            scanQueue = uniqueItemIDs
+            scanTotal = #uniqueItemIDs
+            scanIndex = 0
+            isScanning = true
+            isAutoScan = false
+            waitingForResult = false
+            currentItemID = nil
+            NS.Print(string.format("Checking live prices on %d listed item(s) for undercuts...", #uniqueItemIDs))
+            NS:FireCallback("SCAN_STATE_CHANGED", true, 0, scanTotal, "STARTED")
+            Scanner:TrySendNext()
+        else
+            NS.Print(string.format("Owned auctions updated (%d active listing%s).", #list, #list == 1 and "" or "s"))
+        end
+    end
+end
+
+function Scanner:ScanMyAuctions(andCheckPrices)
+    if NS.DB:IsDemoMode() then
+        NS.Print("Exit Demo Mode (/fmw demo) to scan your live posted auctions.")
+        return false
+    end
+    if not ahOpen then
+        NS.Print("Open the Auction House to check your active auctions for undercuts.")
+        return false
+    end
+    if not C_AuctionHouse or not C_AuctionHouse.QueryOwnedAuctions then
+        NS.PrintError("Owned Auctions API is unavailable on this client.")
+        return false
+    end
+
+    pendingOwnedPriceScan = andCheckPrices and true or false
+    local ok = pcall(function()
+        C_AuctionHouse.QueryOwnedAuctions({})
+    end)
+    if not ok then
+        pendingOwnedPriceScan = false
+        return false
+    end
+    return true
+end
+
+function Scanner:CancelOwnedAuction(auctionID)
+    if not ahOpen or not auctionID then
+        NS.Print("Open the Auction House to cancel an auction.")
+        return false
+    end
+    if not C_AuctionHouse or not C_AuctionHouse.CancelAuction then
+        return false
+    end
+    local ok = pcall(C_AuctionHouse.CancelAuction, auctionID)
+    if ok then
+        if C_Timer and C_Timer.After then
+            C_Timer.After(0.6, function()
+                if ahOpen and C_AuctionHouse and C_AuctionHouse.QueryOwnedAuctions then
+                    pcall(C_AuctionHouse.QueryOwnedAuctions, {})
+                end
+            end)
+        end
+    end
+    return ok
+end
+
+--------------------------------------------------------------------------------
 -- Event Listener
 --------------------------------------------------------------------------------
 
@@ -734,6 +972,7 @@ eventFrame:RegisterEvent("AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED")
 eventFrame:RegisterEvent("COMMODITY_SEARCH_RESULTS_UPDATED")
 eventFrame:RegisterEvent("ITEM_SEARCH_RESULTS_UPDATED")
 eventFrame:RegisterEvent("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+eventFrame:RegisterEvent("OWNED_AUCTIONS_UPDATED")
 eventFrame:RegisterEvent("ITEM_KEY_ITEM_INFO_RECEIVED")
 
 if Enum and Enum.PlayerInteractionType and Enum.PlayerInteractionType.Auctioneer then
@@ -884,5 +1123,7 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
         if not isScanning then
             ProcessBrowseResults()
         end
+    elseif event == "OWNED_AUCTIONS_UPDATED" then
+        ProcessOwnedAuctionsUpdate()
     end
 end)

@@ -55,6 +55,43 @@ local function AnnounceBuy(rec)
     ))
 end
 
+local function AnnounceFee(rec)
+    if not ShouldAnnounce() or not rec then return end
+    NS.Print(string.format(
+        "|cFFFFA030[FEE]|r %dx %s — lost %s deposit (%s)",
+        rec.qty or 1,
+        rec.name or "Item",
+        NS.FormatMoney(rec.ahCut or rec.netTotal or 0, true),
+        rec.source or "EXPIRED"
+    ))
+end
+
+local function AnnounceTransfer(fromChar, toChar, amountCopper)
+    if not ShouldAnnounce() then return end
+    NS.Print(string.format(
+        "|cFFFFD100[TRANSFER]|r %s -> %s: %s (alt-to-alt transfer)",
+        fromChar or "Alt",
+        toChar or "Alt",
+        NS.FormatMoney(amountCopper or 0, true)
+    ))
+end
+
+local function ResolveItemIDFromLocation(itemLocation)
+    if type(itemLocation) ~= "table" then return nil end
+    if C_Item and C_Item.GetItemID then
+        local ok, id = pcall(C_Item.GetItemID, itemLocation)
+        if ok and id and id > 0 then return id end
+    end
+    if itemLocation.bagID ~= nil and itemLocation.slotIndex ~= nil then
+        if C_Container and C_Container.GetContainerItemID then
+            return C_Container.GetContainerItemID(itemLocation.bagID, itemLocation.slotIndex)
+        elseif GetContainerItemID then
+            return GetContainerItemID(itemLocation.bagID, itemLocation.slotIndex)
+        end
+    end
+    return nil
+end
+
 local function AnnounceSale(rec)
     if not ShouldAnnounce() or not rec then return end
     if rec.profit ~= nil then
@@ -215,8 +252,17 @@ local function RefreshInboxSnapshot()
     local numItems = GetInboxNumItems() or 0
     for i = 1, numItems do
         local invoiceType, itemName, playerName, bid, buyout, deposit, consignment, _, _, _, invCount, commerceAuction = GetInboxInvoiceInfo(i)
-        if invoiceType == "seller" or invoiceType == "buyer" then
-            local _, _, sender, subject, money, _, _, hasItem = GetInboxHeaderInfo(i)
+        local _, _, sender, subject, money, _, _, hasItem = GetInboxHeaderInfo(i)
+        local subjLower = (type(subject) == "string") and subject:lower() or ""
+        local senderClean = (type(sender) == "string") and sender:gsub("%-.*$", "") or ""
+
+        local isExpiredAHMail = (invoiceType == nil)
+            and ((hasItem and hasItem > 0) or (GetInboxItemLink and GetInboxItemLink(i, 1) ~= nil))
+            and (subjLower:find("expired", 1, true) ~= nil or subjLower:find("cancelled", 1, true) ~= nil or subjLower:find("canceled", 1, true) ~= nil)
+
+        local isKnownSender = (invoiceType == nil) and ((tonumber(money) or 0) > 0) and senderClean ~= "" and NS.DB:IsKnownCharacter(senderClean)
+
+        if invoiceType == "seller" or invoiceType == "buyer" or isExpiredAHMail or isKnownSender then
             local firstLink = nil
             local attachName, attachItemID, attachIcon = nil, nil, nil
             local totalAttachCount = 0
@@ -255,16 +301,17 @@ local function RefreshInboxSnapshot()
 
             local maxStack = (itemID and C_Item and C_Item.GetItemMaxStackSizeByID and C_Item.GetItemMaxStackSizeByID(itemID)) or 1
             local isCommodityMail = (commerceAuction == true) or (attachSlots > 1) or (maxStack > 1)
+            local resolvedType = invoiceType or (isExpiredAHMail and "expired") or "transfer"
 
             inboxSnapshot[i] = {
-                invoiceType = invoiceType,
+                invoiceType = resolvedType,
                 isCommodity = isCommodityMail,
                 attachSlots = attachSlots,
                 itemID      = itemID,
                 itemName    = resolvedName,
                 icon        = attachIcon,
-                playerName  = playerName or "",
-                sender      = sender or "",
+                playerName  = playerName or senderClean,
+                sender      = senderClean,
                 subject     = subject or "",
                 bid         = tonumber(bid) or 0,
                 buyout      = tonumber(buyout) or 0,
@@ -314,8 +361,21 @@ local function FindExactSubsetIndices(list, target)
 end
 
 local function CommitPendingMailSale(sale)
-    if not sale or not IsTrackingEnabled() then return end
+    if not sale then return end
+    if sale.isTransfer then
+        local me = (UnitName and UnitName("player")) or "Alt"
+        local ok = NS.DB:RecordGoldTransfer(sale.sender, me, sale.money)
+        if ok then
+            AnnounceTransfer(sale.sender, me, sale.money)
+        end
+        return
+    end
+    if not IsTrackingEnabled() then return end
     local itemID = sale.itemID or NS.DB:ResolveItemIDByName(sale.itemName)
+    if itemID then
+        -- Auction sold -> WoW refunds the listing deposit, so clear it from pending deposit queue
+        NS.DB:ConsumePostedDeposit(itemID, sale.count)
+    end
     local ok, rec = NS.DB:RecordLedgerSale(itemID, sale.count, sale.gross, sale.ahCut, {
         name         = sale.itemName,
         counterparty = sale.playerName,
@@ -460,6 +520,49 @@ local function ProcessCollectedMail(mailIndex, mode)
         if ok and rec then
             AnnounceBuy(rec)
         end
+
+    elseif snap.invoiceType == "expired" and (mode == "ITEM" or mode == "AUTO") then
+        if not snap.hasItem then return end
+        snap.collected = true
+
+        local itemID = snap.itemID or NS.DB:ResolveItemIDByName(snap.itemName)
+        if itemID then
+            local lostDeposit = NS.DB:ConsumePostedDeposit(itemID, snap.count)
+            if lostDeposit and lostDeposit > 0 then
+                local isCancel = snap.subject and snap.subject:lower():find("cancel", 1, true) ~= nil
+                local ok, rec = NS.DB:RecordLedgerDepositLoss(itemID, snap.count, lostDeposit, {
+                    name   = snap.itemName,
+                    icon   = snap.icon,
+                    source = isCancel and "CANCELLED" or "EXPIRED",
+                    reason = isCancel and "Cancelled Auction Deposit" or "Expired Auction Deposit",
+                })
+                if ok and rec then
+                    AnnounceFee(rec)
+                end
+            end
+        end
+
+    elseif snap.invoiceType == "transfer" and (mode == "MONEY" or mode == "AUTO") then
+        if not snap.money or snap.money <= 0 then return end
+        snap.collected = true
+
+        local now = (time and time()) or 0
+        PruneStalePendingSales(now)
+        local sig = string.format("XFER|%d|%d|%s", mailIndex, snap.money, snap.sender or "")
+        for i = 1, #pendingMailSales do
+            if pendingMailSales[i].sig == sig then
+                pendingMailSales[i].ts = now
+                return
+            end
+        end
+        table.insert(pendingMailSales, {
+            mailIndex  = mailIndex,
+            sig        = sig,
+            isTransfer = true,
+            sender     = snap.sender,
+            money      = snap.money,
+            ts         = now,
+        })
     end
 end
 
@@ -528,10 +631,85 @@ function Ledger:Init()
                 end
             end)
         end
+
+        if C_AuctionHouse.PostCommodity then
+            hooksecurefunc(C_AuctionHouse, "PostCommodity", function(itemLocation, duration, quantity)
+                if not IsTrackingEnabled() then return end
+                local itemID = ResolveItemIDFromLocation(itemLocation)
+                local qty = math.max(1, tonumber(quantity) or 1)
+                if itemID and C_AuctionHouse.CalculateCommodityDeposit then
+                    local ok, dep = pcall(C_AuctionHouse.CalculateCommodityDeposit, itemID, duration, qty)
+                    if ok and tonumber(dep) and tonumber(dep) > 0 then
+                        NS.DB:AddPostedDeposit(itemID, qty, tonumber(dep))
+                    end
+                end
+            end)
+        end
+
+        if C_AuctionHouse.PostItem then
+            hooksecurefunc(C_AuctionHouse, "PostItem", function(itemLocation, duration, quantity)
+                if not IsTrackingEnabled() then return end
+                local itemID = ResolveItemIDFromLocation(itemLocation)
+                local qty = math.max(1, tonumber(quantity) or 1)
+                if itemID and C_AuctionHouse.CalculateItemDeposit then
+                    local ok, dep = pcall(C_AuctionHouse.CalculateItemDeposit, itemLocation, duration, qty)
+                    if ok and tonumber(dep) and tonumber(dep) > 0 then
+                        NS.DB:AddPostedDeposit(itemID, qty, tonumber(dep))
+                    end
+                end
+            end)
+        end
+
+        if C_AuctionHouse.CancelAuction then
+            hooksecurefunc(C_AuctionHouse, "CancelAuction", function(auctionID)
+                if not IsTrackingEnabled() or not auctionID then return end
+                local info = nil
+                if C_AuctionHouse.GetOwnedAuctionInfo and C_AuctionHouse.GetNumOwnedAuctions then
+                    local n = C_AuctionHouse.GetNumOwnedAuctions() or 0
+                    for i = 1, n do
+                        local a = C_AuctionHouse.GetOwnedAuctionInfo(i)
+                        if a and a.auctionID == auctionID then
+                            info = a
+                            break
+                        end
+                    end
+                end
+                local itemID = info and info.itemKey and info.itemKey.itemID or nil
+                local qty = (info and info.quantity) or 1
+                if itemID then
+                    local lostDeposit = NS.DB:ConsumePostedDeposit(itemID, qty)
+                    if lostDeposit and lostDeposit > 0 then
+                        local ok, rec = NS.DB:RecordLedgerDepositLoss(itemID, qty, lostDeposit, {
+                            source = "CANCELLED",
+                            reason = "Cancelled Auction Deposit",
+                        })
+                        if ok and rec then
+                            AnnounceFee(rec)
+                        end
+                    end
+                end
+            end)
+        end
     end
 
-    -- 2. Hook Mailbox collection functions (works with Blizzard Open All, Shift-click, and mail addons)
+    -- 2. Hook Mailbox collection & alt-to-alt SendMail functions
     if hooksecurefunc then
+        if SendMail then
+            hooksecurefunc("SendMail", function(recipient)
+                if NS.DB:IsDemoMode() or not GetSendMailMoney then return end
+                local money = tonumber(GetSendMailMoney()) or 0
+                if money > 0 and type(recipient) == "string" and recipient ~= "" then
+                    local isKnown, canonName = NS.DB:IsKnownCharacter(recipient)
+                    if isKnown then
+                        local me = (UnitName and UnitName("player")) or "Alt"
+                        local ok = NS.DB:RecordGoldTransfer(me, canonName, money)
+                        if ok then
+                            AnnounceTransfer(me, canonName, money)
+                        end
+                    end
+                end
+            end)
+        end
         if TakeInboxMoney then
             hooksecurefunc("TakeInboxMoney", function(mailIndex)
                 ProcessCollectedMail(mailIndex, "MONEY")

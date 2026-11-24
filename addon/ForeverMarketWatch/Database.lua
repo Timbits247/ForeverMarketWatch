@@ -271,6 +271,10 @@ function DB:GetMarket(marketKey)
             pendingMailMatches = {},
             charGroups         = {},
             charGold           = {},
+            charMeta           = {},
+            transfers          = {},
+            postedDeposits     = {},
+            ownedAuctions      = {},
             pinned             = {},
             pinnedOrder        = {},
             lastAutoScan       = 0,
@@ -304,6 +308,18 @@ function DB:GetMarket(marketKey)
     end
     if type(market.charGold) ~= "table" then
         market.charGold = {}
+    end
+    if type(market.charMeta) ~= "table" then
+        market.charMeta = {}
+    end
+    if type(market.transfers) ~= "table" then
+        market.transfers = {}
+    end
+    if type(market.postedDeposits) ~= "table" then
+        market.postedDeposits = {}
+    end
+    if type(market.ownedAuctions) ~= "table" then
+        market.ownedAuctions = {}
     end
     if type(market.pinned) ~= "table" then
         market.pinned = {}
@@ -700,9 +716,27 @@ function DB:GetKnownCharacters()
             AddChar(ch)
         end
     end
+    if type(market.charMeta) == "table" then
+        for ch in pairs(market.charMeta) do
+            AddChar(ch)
+        end
+    end
 
     table.sort(list, function(a, b) return a:lower() < b:lower() end)
     return list
+end
+
+function DB:IsKnownCharacter(name)
+    if type(name) ~= "string" then return false end
+    local q = name:match("^%s*(.-)%s*$"):gsub("%-.*$", ""):lower()
+    if q == "" then return false end
+    local chars = self:GetKnownCharacters()
+    for i = 1, #chars do
+        if chars[i]:lower() == q then
+            return true, chars[i]
+        end
+    end
+    return false, nil
 end
 
 function DB:BuildCharacterFilterSet(charFilter)
@@ -907,7 +941,48 @@ local function CompactGoldHistory(history, now)
     for i = #out + 1, #history do history[i] = nil end
 end
 
-function DB:RecordCharacterGold(copper, character, ts, silent, marketOverride)
+function DB:GetCharacterInventoryNetValue(character, marketOverride)
+    if type(character) ~= "string" or character == "" then return 0 end
+    local market = marketOverride or self:GetActiveMarket()
+    local investments = market.investments or {}
+    local cutRate = (NS.Analytics and NS.Analytics.GetAHCutRate()) or 0.05
+    local target = character:lower()
+    local total = 0
+
+    for itemID, inv in pairs(investments) do
+        if type(inv) == "table" then
+            local qty, cost = 0, 0
+            if type(inv.byChar) == "table" then
+                for ch, cd in pairs(inv.byChar) do
+                    if ch:lower() == target and (cd.qty or 0) > 0 then
+                        qty = qty + cd.qty
+                        cost = cost + (cd.totalCost or (cd.qty * (cd.avgCost or inv.avgCost or 0)))
+                    end
+                end
+            elseif (inv.qty or 0) > 0 and type(inv.holder) == "string" then
+                local single = inv.holder:match("^%s*([^,]+)%s*$")
+                if single and single:lower() == target then
+                    qty = inv.qty
+                    cost = inv.totalCost or (qty * (inv.avgCost or 0))
+                end
+            end
+
+            if qty > 0 then
+                local hist = market.history and market.history[itemID] or nil
+                local latest = hist and NS.Analytics and NS.Analytics.GetLatestPoint(hist) or nil
+                if latest and latest.min and latest.min > 0 then
+                    total = total + math.floor((qty * latest.min) * (1 - cutRate) + 0.5)
+                else
+                    total = total + cost
+                end
+            end
+        end
+    end
+
+    return total
+end
+
+function DB:RecordCharacterGold(copper, character, ts, silent, marketOverride, invValueOverride)
     if demoModeActive and not marketOverride then return false end
     copper = math.max(0, math.floor((tonumber(copper) or 0) + 0.5))
     local ch = (type(character) == "string" and character:match("^%s*(.-)%s*$") ~= "")
@@ -919,37 +994,47 @@ function DB:RecordCharacterGold(copper, character, ts, silent, marketOverride)
     if type(market.charGold) ~= "table" then market.charGold = {} end
 
     local now = ts or (time and time()) or 0
+    local invVal = (invValueOverride ~= nil)
+        and math.max(0, math.floor((tonumber(invValueOverride) or 0) + 0.5))
+        or self:GetCharacterInventoryNetValue(ch, market)
+
     local rec = market.charGold[ch]
     local changed = false
 
     if type(rec) ~= "table" then
         rec = {
             current   = copper,
+            invValue  = invVal,
             updatedAt = now,
-            history   = { { now, copper } },
+            history   = { { now, copper, invVal } },
         }
         market.charGold[ch] = rec
         changed = true
     else
         if type(rec.history) ~= "table" then rec.history = {} end
-        changed = (rec.current ~= copper)
+        changed = (rec.current ~= copper) or ((rec.invValue or 0) ~= invVal)
         rec.current = copper
+        rec.invValue = invVal
         rec.updatedAt = now
 
         local h = rec.history
         local n = #h
         if n == 0 then
-            h[1] = { now, copper }
+            h[1] = { now, copper, invVal }
         else
             local last = h[n]
             if last and math.abs(now - (last[1] or 0)) < GOLD_MERGE_WINDOW then
                 last[1] = math.max(last[1] or now, now)
                 last[2] = copper
-            elseif n >= 2 and h[n][2] == copper and h[n - 1][2] == copper then
+                last[3] = invVal
+            elseif n >= 2
+                and h[n][2] == copper and h[n - 1][2] == copper
+                and (h[n][3] or 0) == invVal and (h[n - 1][3] or 0) == invVal
+            then
                 -- Collapse redundant flat points while preserving exact inflection corners
                 last[1] = math.max(last[1] or now, now)
             else
-                table.insert(h, { now, copper })
+                table.insert(h, { now, copper, invVal })
                 if #h > 300 and (#h % 25 == 0) then
                     CompactGoldHistory(h, now)
                 end
@@ -963,8 +1048,8 @@ function DB:RecordCharacterGold(copper, character, ts, silent, marketOverride)
     return true
 end
 
--- Aggregates per-character gold histories using exact Step-Carry-Forward (LOCF)
--- so multi-character or Character-Group totals stay smooth and accurate over time.
+-- Aggregates per-character liquid gold + Net Worth (Liquid + Active Inventory Est. Value)
+-- using exact Step-Carry-Forward (LOCF) so multi-character & Character-Group totals stay smooth.
 function DB:GetGoldHistorySummary(opts)
     opts = opts or {}
     local market = opts.marketOverride or self:GetActiveMarket()
@@ -987,14 +1072,22 @@ function DB:GetGoldHistorySummary(opts)
     local matched = {}
     local chars = {}
     local currentTotal = 0
+    local liveInvSumFromChars = 0
 
     for ch, rec in pairs(charGold) do
         if type(rec) == "table" and self:MatchesCharacterFilter(ch, filterSet) then
             local cur = math.max(0, math.floor((tonumber(rec.current) or 0) + 0.5))
+            local chInv = self:GetCharacterInventoryNetValue(ch, market)
+            if chInv == 0 and rec.invValue and rec.invValue > 0 and opts.marketOverride then
+                chInv = math.floor(rec.invValue + 0.5)
+            end
             currentTotal = currentTotal + cur
+            liveInvSumFromChars = liveInvSumFromChars + chInv
             table.insert(chars, {
                 name      = ch,
                 copper    = cur,
+                invValue  = chInv,
+                netWorth  = cur + chInv,
                 updatedAt = rec.updatedAt or 0,
             })
 
@@ -1003,14 +1096,16 @@ function DB:GetGoldHistorySummary(opts)
                 for i = 1, #rec.history do
                     local pt = rec.history[i]
                     if type(pt) == "table" and pt[1] and pt[2] ~= nil then
-                        table.insert(hist, { pt[1], math.max(0, math.floor((tonumber(pt[2]) or 0) + 0.5)) })
+                        local liq = math.max(0, math.floor((tonumber(pt[2]) or 0) + 0.5))
+                        local iv = math.max(0, math.floor((tonumber(pt[3]) or 0) + 0.5))
+                        table.insert(hist, { pt[1], liq, iv })
                     end
                 end
                 table.sort(hist, function(a, b) return a[1] < b[1] end)
             else
-                hist[1] = { rec.updatedAt or now, cur }
+                hist[1] = { rec.updatedAt or now, cur, chInv }
             end
-            table.insert(matched, { name = ch, current = cur, updatedAt = rec.updatedAt or now, history = hist })
+            table.insert(matched, { name = ch, current = cur, invValue = chInv, updatedAt = rec.updatedAt or now, history = hist })
         end
     end
 
@@ -1018,6 +1113,16 @@ function DB:GetGoldHistorySummary(opts)
         if a.copper ~= b.copper then return a.copper > b.copper end
         return a.name:lower() < b.name:lower()
     end)
+
+    -- Live filtered inventory value (includes pre-Ledger investments cleanly)
+    local currentInvValue = liveInvSumFromChars
+    if not opts.marketOverride then
+        local port = self:GetPortfolioSummary(opts.charFilter)
+        if port and port.estNetValue then
+            currentInvValue = math.max(currentInvValue, port.estNetValue)
+        end
+    end
+    local currentNetWorth = currentTotal + currentInvValue
 
     -- Collect union of timestamps inside [cutoff, now] plus carry-forward anchor at cutoff
     local tsSet = {}
@@ -1044,7 +1149,6 @@ function DB:GetGoldHistorySummary(opts)
         table.insert(tsList, cutoff)
     end
 
-    -- Append live current balance at `now` if we have tracked characters and `now` is after last point
     if #matched > 0 and now > maxRecordedTs and not tsSet[now] then
         tsSet[now] = true
         table.insert(tsList, now)
@@ -1057,12 +1161,13 @@ function DB:GetGoldHistorySummary(opts)
     for i = 1, #matched do pointers[i] = 0 end
 
     local points = {}
-    local minCopper = nil
-    local maxCopper = nil
+    local minCopper, maxCopper = nil, nil
+    local minNetWorth, maxNetWorth = nil, nil
 
     for ti = 1, #tsList do
         local t = tsList[ti]
-        local sum = 0
+        local sumLiq = 0
+        local sumInv = 0
         local contributing = 0
         for ci = 1, #matched do
             local h = matched[ci].history
@@ -1072,45 +1177,359 @@ function DB:GetGoldHistorySummary(opts)
             end
             pointers[ci] = p
             if p > 0 then
-                sum = sum + h[p][2]
+                sumLiq = sumLiq + h[p][2]
+                sumInv = sumInv + (h[p][3] or 0)
                 contributing = contributing + 1
             end
         end
 
-        -- At the final live `now` point, guarantee exact match with live `currentTotal`
         if t == now and #matched > 0 then
-            sum = currentTotal
+            sumLiq = currentTotal
+            sumInv = currentInvValue
             contributing = #matched
         end
 
         if contributing > 0 then
-            table.insert(points, { ts = t, copper = sum })
-            if not minCopper or sum < minCopper then minCopper = sum end
-            if not maxCopper or sum > maxCopper then maxCopper = sum end
+            local nw = sumLiq + sumInv
+            table.insert(points, { ts = t, copper = sumLiq, invValue = sumInv, netWorth = nw })
+            if not minCopper or sumLiq < minCopper then minCopper = sumLiq end
+            if not maxCopper or sumLiq > maxCopper then maxCopper = sumLiq end
+            if not minNetWorth or nw < minNetWorth then minNetWorth = nw end
+            if not maxNetWorth or nw > maxNetWorth then maxNetWorth = nw end
         end
     end
 
-    -- Fallback single point if matched chars exist with empty timestamps
     if #points == 0 and #matched > 0 then
-        points[1] = { ts = now, copper = currentTotal }
-        minCopper = currentTotal
-        maxCopper = currentTotal
+        points[1] = { ts = now, copper = currentTotal, invValue = currentInvValue, netWorth = currentNetWorth }
+        minCopper, maxCopper = currentTotal, currentTotal
+        minNetWorth, maxNetWorth = currentNetWorth, currentNetWorth
     end
 
     local startTotal = (#points > 0) and points[1].copper or currentTotal
     local periodDelta = currentTotal - startTotal
     local periodPct = (startTotal > 0) and ((periodDelta / startTotal) * 100) or nil
 
+    local startNetWorth = (#points > 0) and points[1].netWorth or currentNetWorth
+    local netWorthDelta = currentNetWorth - startNetWorth
+    local netWorthPct = (startNetWorth > 0) and ((netWorthDelta / startNetWorth) * 100) or nil
+
     return {
-        currentTotal = currentTotal,
-        startTotal   = startTotal,
-        periodDelta  = periodDelta,
-        periodPct    = periodPct,
-        minCopper    = minCopper or 0,
-        maxCopper    = maxCopper or 0,
-        charCount    = #chars,
-        chars        = chars,
-        points       = points,
+        currentTotal    = currentTotal,
+        currentInvValue = currentInvValue,
+        currentNetWorth = currentNetWorth,
+        startTotal      = startTotal,
+        periodDelta     = periodDelta,
+        periodPct       = periodPct,
+        startNetWorth   = startNetWorth,
+        netWorthDelta   = netWorthDelta,
+        netWorthPct     = netWorthPct,
+        minCopper       = minCopper or 0,
+        maxCopper       = maxCopper or 0,
+        minNetWorth     = minNetWorth or (minCopper or 0),
+        maxNetWorth     = maxNetWorth or (maxCopper or 0),
+        charCount       = #chars,
+        chars           = chars,
+        points          = points,
+    }
+end
+
+--------------------------------------------------------------------------------
+-- Seed Capital & Alt-to-Alt Gold Transfer Tracking
+--------------------------------------------------------------------------------
+
+function DB:GetCharacterSeedCapital(charName, marketOverride)
+    if type(charName) ~= "string" or charName == "" then return 0 end
+    local market = marketOverride or self:GetActiveMarket()
+    local meta = market.charMeta and market.charMeta[charName]
+    return (meta and tonumber(meta.seedCapital)) or 0
+end
+
+function DB:SetCharacterSeedCapital(charName, copper, marketOverride)
+    if type(charName) ~= "string" then return false end
+    local clean = charName:match("^%s*(.-)%s*$")
+    if clean == "" then return false end
+    local amt = math.max(0, math.floor((tonumber(copper) or 0) + 0.5))
+
+    local market = marketOverride or self:GetActiveMarket()
+    if type(market.charMeta) ~= "table" then market.charMeta = {} end
+    if type(market.charMeta[clean]) ~= "table" then
+        market.charMeta[clean] = { seedCapital = 0, transfersIn = 0, transfersOut = 0 }
+    end
+    market.charMeta[clean].seedCapital = amt
+    if not marketOverride then
+        NS:FireCallback("DATA_UPDATED", nil, "SEED_UPDATED")
+    end
+    return true
+end
+
+function DB:RecordGoldTransfer(fromChar, toChar, amountCopper, ts, silent, marketOverride)
+    if demoModeActive and not marketOverride then return false end
+    local amt = math.floor((tonumber(amountCopper) or 0) + 0.5)
+    if amt <= 0 then return false end
+    local fClean = (type(fromChar) == "string") and fromChar:match("^%s*(.-)%s*$"):gsub("%-.*$", "") or ""
+    local tClean = (type(toChar) == "string") and toChar:match("^%s*(.-)%s*$"):gsub("%-.*$", "") or ""
+    if fClean == "" or tClean == "" or fClean:lower() == tClean:lower() then return false end
+
+    local market = marketOverride or self:GetActiveMarket()
+    if type(market.transfers) ~= "table" then market.transfers = {} end
+    if type(market.charMeta) ~= "table" then market.charMeta = {} end
+
+    local now = ts or (time and time()) or 0
+
+    -- Deduplicate SendMail + Mailbox Pickup of the same transfer within 15 minutes
+    for i = #market.transfers, math.max(1, #market.transfers - 20), -1 do
+        local tr = market.transfers[i]
+        if tr
+            and tr.fromChar and tr.fromChar:lower() == fClean:lower()
+            and tr.toChar and tr.toChar:lower() == tClean:lower()
+            and tr.amount == amt
+            and math.abs(now - (tr.ts or 0)) <= 900
+        then
+            return false, tr
+        end
+    end
+
+    if type(market.charMeta[fClean]) ~= "table" then
+        market.charMeta[fClean] = { seedCapital = 0, transfersIn = 0, transfersOut = 0 }
+    end
+    if type(market.charMeta[tClean]) ~= "table" then
+        market.charMeta[tClean] = { seedCapital = 0, transfersIn = 0, transfersOut = 0 }
+    end
+
+    market.charMeta[fClean].transfersOut = (market.charMeta[fClean].transfersOut or 0) + amt
+    market.charMeta[tClean].transfersIn  = (market.charMeta[tClean].transfersIn or 0) + amt
+
+    local rec = {
+        ts       = now,
+        fromChar = fClean,
+        toChar   = tClean,
+        amount   = amt,
+    }
+    table.insert(market.transfers, rec)
+    if #market.transfers > 500 then
+        table.remove(market.transfers, 1)
+    end
+
+    if not silent and not marketOverride then
+        NS:FireCallback("DATA_UPDATED", nil, "TRANSFER_RECORDED")
+    end
+    return true, rec
+end
+
+function DB:GetTransfers(limit, marketOverride)
+    local market = marketOverride or self:GetActiveMarket()
+    local list = (type(market.transfers) == "table") and market.transfers or {}
+    local out = {}
+    local maxN = limit or 20
+    for i = #list, math.max(1, #list - maxN + 1), -1 do
+        table.insert(out, list[i])
+    end
+    return out
+end
+
+function DB:GetFilteredSeedSummary(charFilter, marketOverride)
+    local market = marketOverride or self:GetActiveMarket()
+    local charMeta = (type(market.charMeta) == "table") and market.charMeta or {}
+    local filterSet = self:BuildCharacterFilterSet(charFilter)
+
+    local explicitSeed = 0
+    local transfersIn = 0
+    local transfersOut = 0
+
+    for ch, meta in pairs(charMeta) do
+        if type(meta) == "table" and self:MatchesCharacterFilter(ch, filterSet) then
+            explicitSeed = explicitSeed + (tonumber(meta.seedCapital) or 0)
+            transfersIn  = transfersIn + (tonumber(meta.transfersIn) or 0)
+            transfersOut = transfersOut + (tonumber(meta.transfersOut) or 0)
+        end
+    end
+
+    local netTransfers = transfersIn - transfersOut
+    local effectiveSeed = (explicitSeed > 0) and explicitSeed or math.max(0, netTransfers)
+
+    return {
+        explicitSeed  = explicitSeed,
+        transfersIn   = transfersIn,
+        transfersOut  = transfersOut,
+        netTransfers  = netTransfers,
+        effectiveSeed = effectiveSeed,
+    }
+end
+
+--------------------------------------------------------------------------------
+-- Posted Auction Deposits & Owned Auctions Undercut Cache
+--------------------------------------------------------------------------------
+
+function DB:AddPostedDeposit(itemID, qty, depositCopper, character, ts, marketOverride)
+    if demoModeActive and not marketOverride then return end
+    itemID = tonumber(itemID)
+    local dep = math.floor((tonumber(depositCopper) or 0) + 0.5)
+    if not itemID or itemID <= 0 or dep <= 0 then return end
+
+    local market = marketOverride or self:GetActiveMarket()
+    if type(market.postedDeposits) ~= "table" then market.postedDeposits = {} end
+    if type(market.postedDeposits[itemID]) ~= "table" then market.postedDeposits[itemID] = {} end
+
+    local list = market.postedDeposits[itemID]
+    local now = ts or (time and time()) or 0
+    for i = #list, 1, -1 do
+        if (now - (list[i].ts or 0)) > (96 * 3600) then
+            table.remove(list, i)
+        end
+    end
+
+    table.insert(list, {
+        qty     = math.max(1, math.floor((tonumber(qty) or 1) + 0.5)),
+        deposit = dep,
+        char    = character or (UnitName and UnitName("player")) or "Alt",
+        ts      = now,
+    })
+end
+
+function DB:ConsumePostedDeposit(itemID, qty, character, marketOverride)
+    if demoModeActive and not marketOverride then return 0 end
+    itemID = tonumber(itemID)
+    if not itemID or itemID <= 0 then return 0 end
+
+    local market = marketOverride or self:GetActiveMarket()
+    local list = market.postedDeposits and market.postedDeposits[itemID]
+    if type(list) ~= "table" or #list == 0 then return 0 end
+
+    local targetQty = math.max(1, math.floor((tonumber(qty) or 1) + 0.5))
+    local chLower = (type(character) == "string" and character ~= "") and character:lower() or nil
+
+    -- 1. Prefer exact char + exact qty match
+    for i = 1, #list do
+        local p = list[i]
+        if (not chLower or (p.char and p.char:lower() == chLower)) and p.qty == targetQty then
+            table.remove(list, i)
+            return p.deposit or 0
+        end
+    end
+    -- 2. Next prefer exact char match (prorating if partial expiry/sale)
+    for i = 1, #list do
+        local p = list[i]
+        if not chLower or (p.char and p.char:lower() == chLower) then
+            if targetQty >= (p.qty or 1) then
+                table.remove(list, i)
+                return p.deposit or 0
+            else
+                local portion = math.max(1, math.floor(((p.deposit or 0) * (targetQty / p.qty)) + 0.5))
+                p.qty = p.qty - targetQty
+                p.deposit = math.max(0, (p.deposit or 0) - portion)
+                return portion
+            end
+        end
+    end
+    return 0
+end
+
+function DB:SetOwnedAuctions(character, list, ts, marketOverride)
+    if demoModeActive and not marketOverride then return end
+    local ch = (type(character) == "string" and character ~= "") and character or (UnitName and UnitName("player"))
+    if type(ch) ~= "string" or ch == "" then return end
+
+    local market = marketOverride or self:GetActiveMarket()
+    if type(market.ownedAuctions) ~= "table" then market.ownedAuctions = {} end
+
+    market.ownedAuctions[ch] = {
+        updatedAt = ts or (time and time()) or 0,
+        list      = type(list) == "table" and list or {},
+    }
+    if not marketOverride then
+        NS:FireCallback("DATA_UPDATED", nil, "OWNED_AUCTIONS_UPDATED")
+    end
+end
+
+function DB:GetOwnedAuctionsView(charFilter, marketOverride)
+    local market = marketOverride or self:GetActiveMarket()
+    local owned = (type(market.ownedAuctions) == "table") and market.ownedAuctions or {}
+    local filterSet = self:BuildCharacterFilterSet(charFilter)
+    local cutRate = (NS.Analytics and NS.Analytics.GetAHCutRate()) or 0.05
+    local playerName = (UnitName and UnitName("player")) or ""
+
+    local out = {}
+    local undercutCount = 0
+    local belowCostCount = 0
+    local totalListedValue = 0
+    local latestScanTs = 0
+
+    for ch, bucket in pairs(owned) do
+        if type(bucket) == "table" and self:MatchesCharacterFilter(ch, filterSet) then
+            if (bucket.updatedAt or 0) > latestScanTs then
+                latestScanTs = bucket.updatedAt or 0
+            end
+            local list = bucket.list or {}
+            for i = 1, #list do
+                local a = list[i]
+                local itemID = tonumber(a.itemID)
+                local qty = math.max(1, tonumber(a.qty) or 1)
+                local unitPrice = tonumber(a.unitPrice) or 0
+                local totalBuyout = tonumber(a.totalBuyout) or (unitPrice * qty)
+
+                local hist = (itemID and market.history) and market.history[itemID] or nil
+                local latest = hist and NS.Analytics and NS.Analytics.GetLatestPoint(hist) or nil
+                local mktMin = (latest and latest.min and latest.min > 0) and latest.min or nil
+
+                local inv = itemID and market.investments and market.investments[itemID] or nil
+                local avgCost = (inv and inv.avgCost and inv.avgCost > 0) and inv.avgCost or 0
+                local breakEven = (avgCost > 0) and math.ceil(avgCost / (1 - cutRate)) or 0
+
+                local status = "NO_DATA"
+                local undercutBy = 0
+                if mktMin and unitPrice > 0 then
+                    if mktMin < unitPrice then
+                        status = "UNDERCUT"
+                        undercutBy = unitPrice - mktMin
+                        undercutCount = undercutCount + 1
+                    else
+                        status = "LOWEST"
+                    end
+                end
+
+                local belowBreakEven = (breakEven > 0 and mktMin ~= nil and mktMin < breakEven)
+                if belowBreakEven then
+                    belowCostCount = belowCostCount + 1
+                end
+
+                totalListedValue = totalListedValue + totalBuyout
+
+                table.insert(out, {
+                    auctionID       = a.auctionID,
+                    itemID          = itemID,
+                    name            = a.name or (itemID and ("Item #" .. tostring(itemID)) or "Unknown Item"),
+                    icon            = a.icon or (itemID and NS.Compat.GetItemIconByID(itemID)) or 134400,
+                    quality         = a.quality or 1,
+                    qty             = qty,
+                    unitPrice       = unitPrice,
+                    totalBuyout     = totalBuyout,
+                    mktMin          = mktMin,
+                    avgCost         = avgCost,
+                    breakEven       = breakEven,
+                    status          = status,
+                    undercutBy      = undercutBy,
+                    belowBreakEven  = belowBreakEven,
+                    timeLeftSeconds = a.timeLeftSeconds,
+                    character       = ch,
+                    isCurrentChar   = (playerName ~= "" and ch:lower() == playerName:lower()),
+                })
+            end
+        end
+    end
+
+    table.sort(out, function(a, b)
+        local ra = (a.status == "UNDERCUT" and 1) or (a.status == "LOWEST" and 2) or 3
+        local rb = (b.status == "UNDERCUT" and 1) or (b.status == "LOWEST" and 2) or 3
+        if ra ~= rb then return ra < rb end
+        return (a.totalBuyout or 0) > (b.totalBuyout or 0)
+    end)
+
+    return out, {
+        totalAuctions    = #out,
+        undercutCount    = undercutCount,
+        belowCostCount   = belowCostCount,
+        totalListedValue = totalListedValue,
+        latestScanTs     = latestScanTs,
     }
 end
 
@@ -1484,16 +1903,67 @@ function DB:GetLedgerEntries(opts)
     return out
 end
 
+function DB:RecordLedgerDepositLoss(itemID, qty, depositCopper, meta)
+    if demoModeActive then return false, "Demo mode active" end
+    meta = meta or {}
+    itemID = tonumber(itemID)
+    qty = math.max(1, math.floor((tonumber(qty) or 1) + 0.5))
+    depositCopper = math.floor((tonumber(depositCopper) or 0) + 0.5)
+    if depositCopper <= 0 then
+        return false, "Invalid deposit amount."
+    end
+
+    local market = self:GetActiveMarket()
+    local now = meta.ts or (time and time()) or 0
+    local character = meta.character or (UnitName and UnitName("player")) or "Alt"
+    local name, icon, quality = ResolveLedgerItemMeta(market, itemID, meta)
+
+    local entryId = market.ledgerNextId or ((#market.ledger) + 1)
+    market.ledgerNextId = entryId + 1
+
+    local rec = {
+        id           = entryId,
+        ts           = now,
+        type         = "FEE",
+        itemID       = itemID,
+        name         = name,
+        icon         = icon,
+        quality      = quality,
+        qty          = qty,
+        unitPrice    = math.max(1, math.floor((depositCopper / qty) + 0.5)),
+        gross        = depositCopper,
+        ahCut        = depositCopper,
+        netTotal     = depositCopper,
+        costBasis    = 0,
+        profit       = -depositCopper,
+        roiPct       = nil,
+        matched      = "FEE",
+        character    = character,
+        counterparty = meta.reason or "Expired / Cancelled Deposit",
+        source       = meta.source or "EXPIRED",
+    }
+
+    table.insert(market.ledger, rec)
+    if #market.ledger > MAX_LEDGER_ENTRIES then
+        table.remove(market.ledger, 1)
+    end
+
+    NS:FireCallback("DATA_UPDATED", itemID, "LEDGER_FEE")
+    return true, rec
+end
+
 function DB:GetLedgerSummary(days, nowTs, charFilter)
     local entries = self:GetLedgerEntries({ days = days, nowTs = nowTs, charFilter = charFilter })
     local totalBought = 0
     local totalSoldGross = 0
     local totalSoldNet = 0
     local totalFees = 0
+    local depositLoss = 0
     local realizedProfit = 0
     local matchedCostBasis = 0
     local buyCount = 0
     local sellCount = 0
+    local feeCount = 0
     local matchedSellCount = 0
 
     for i = 1, #entries do
@@ -1511,6 +1981,12 @@ function DB:GetLedgerSummary(days, nowTs, charFilter)
                 matchedCostBasis = matchedCostBasis + (e.costBasis or 0)
                 matchedSellCount = matchedSellCount + 1
             end
+        elseif e.type == "FEE" then
+            local loss = math.max(0, e.ahCut or e.netTotal or e.gross or 0)
+            feeCount = feeCount + 1
+            depositLoss = depositLoss + loss
+            totalFees = totalFees + loss
+            realizedProfit = realizedProfit - loss
         end
     end
 
@@ -1519,12 +1995,14 @@ function DB:GetLedgerSummary(days, nowTs, charFilter)
         totalSoldGross   = totalSoldGross,
         totalSoldNet     = totalSoldNet,
         totalFees        = totalFees,
-        netCashflow      = totalSoldNet - totalBought,
+        depositLoss      = depositLoss,
+        netCashflow      = totalSoldNet - totalBought - depositLoss,
         realizedProfit   = realizedProfit,
         matchedCostBasis = matchedCostBasis,
         realizedRoiPct   = (matchedCostBasis > 0) and ((realizedProfit / matchedCostBasis) * 100) or nil,
         buyCount         = buyCount,
         sellCount        = sellCount,
+        feeCount         = feeCount,
         matchedSellCount = matchedSellCount,
         totalCount       = #entries,
     }
@@ -1565,6 +2043,8 @@ function DB:GetItemProfitSummaries(opts)
                 sellGross        = 0,
                 sellNet          = 0,
                 sellFees         = 0,
+                depositLoss      = 0,
+                feeCount         = 0,
                 matchedProfit    = 0,
                 matchedCost      = 0,
                 matchedSellCount = 0,
@@ -1604,6 +2084,10 @@ function DB:GetItemProfitSummaries(opts)
             else
                 b.untrackedSellNet = b.untrackedSellNet + (e.netTotal or 0)
             end
+        elseif e.type == "FEE" then
+            local loss = math.max(0, e.ahCut or e.netTotal or e.gross or 0)
+            b.feeCount = b.feeCount + 1
+            b.depositLoss = b.depositLoss + loss
         end
     end
 
@@ -1667,10 +2151,10 @@ function DB:GetItemProfitSummaries(opts)
             b.avgBuy  = (b.buyQty > 0) and math.floor((b.buyTotal / b.buyQty) + 0.5) or 0
             b.avgSell = (b.sellQty > 0) and math.floor((b.sellNet / b.sellQty) + 0.5) or 0
 
-            -- Realized P&L: matched flips profit + net revenue from farmed/crafted sales with no tracked buy cost
-            b.realizedPnL = b.matchedProfit + b.untrackedSellNet
+            -- Realized P&L: matched flips profit + net revenue from farmed/crafted sales - lost listing deposits
+            b.realizedPnL = b.matchedProfit + b.untrackedSellNet - (b.depositLoss or 0)
             b.isFarmedOnly = (b.buyQty == 0 and b.onHandQty == 0 and b.untrackedSellNet > 0)
-            b.realizedRoiPct = (b.matchedCost > 0) and ((b.matchedProfit / b.matchedCost) * 100) or nil
+            b.realizedRoiPct = (b.matchedCost > 0) and (((b.matchedProfit - (b.depositLoss or 0)) / b.matchedCost) * 100) or nil
 
             -- Total P&L (Incl. remaining open stock): Realized P&L + Unrealized P&L on stock currently held
             b.totalPnL = b.realizedPnL + b.unrealizedPnL

@@ -97,8 +97,24 @@ local function BuildDemoMarket()
         ledgerNextId = 5,
         pendingMailMatches = {},
         charGold = {
-            Bankalt = { current = 0, updatedAt = now, history = {} },
-            Mainchar = { current = 0, updatedAt = now, history = {} },
+            Bankalt = { current = 0, invValue = 9780000, updatedAt = now, history = {} },
+            Mainchar = { current = 0, invValue = 2360000, updatedAt = now, history = {} },
+        },
+        charMeta = {
+            Bankalt = { seedCapital = 500000, transfersIn = 500000, transfersOut = 0 },
+            Mainchar = { seedCapital = 0, transfersIn = 0, transfersOut = 500000 },
+        },
+        transfers = {
+            { ts = now - (14 * 86400), fromChar = "Mainchar", toChar = "Bankalt", amount = 500000 },
+        },
+        ownedAuctions = {
+            Bankalt = {
+                updatedAt = now - 120,
+                list = {
+                    { auctionID = 9001, itemID = 13468, name = "Black Lotus", icon = 134208, quality = 2, qty = 2, unitPrice = 920000, totalBuyout = 1840000 },
+                    { auctionID = 9002, itemID = 13444, name = "Major Mana Potion", icon = 134851, quality = 1, qty = 20, unitPrice = 24000, totalBuyout = 480000 },
+                },
+            },
         },
         pinned = {
             [13468] = true,
@@ -190,15 +206,19 @@ local function BuildDemoMarket()
         local waveB = math.floor(math.sin(d * 0.55) * 35000)
         local trendB = (30 - d) * 14500
         local bVal = math.max(120000, bankGold + trendB + waveB)
-        table.insert(market.charGold.Bankalt.history, { ts, bVal })
+        local bInv = 300000 + ((30 - d) * 8500)
+        table.insert(market.charGold.Bankalt.history, { ts, bVal, bInv })
         market.charGold.Bankalt.current = bVal
+        market.charGold.Bankalt.invValue = bInv
         market.charGold.Bankalt.updatedAt = ts
 
         local waveM = math.floor(math.cos(d * 0.4) * 22000)
         local trendM = (30 - d) * 6800
         local mVal = math.max(80000, mainGold + trendM + waveM)
-        table.insert(market.charGold.Mainchar.history, { ts + 1800, mVal })
+        local mInv = 120000 + ((30 - d) * 2500)
+        table.insert(market.charGold.Mainchar.history, { ts + 1800, mVal, mInv })
         market.charGold.Mainchar.current = mVal
+        market.charGold.Mainchar.invValue = mInv
         market.charGold.Mainchar.updatedAt = ts + 1800
     end
 
@@ -482,19 +502,45 @@ function NS.RunSelfTests()
     AssertTrue("Char group matches Investor", NS.DB:MatchesCharacterFilter("Investor", fSet))
     AssertTrue("Char group excludes Timbits", not NS.DB:MatchesCharacterFilter("Timbits", fSet))
 
-    -- 17. Per-Character Gold History & Filtered Step-Carry-Forward Aggregation
-    local mockGoldMkt = { charGold = {}, charGroups = {} }
-    NS.DB:RecordCharacterGold(50000, "Investor", baseNow - 7200, true, mockGoldMkt)  -- 5g
-    NS.DB:RecordCharacterGold(100000, "Timbits", baseNow - 5400, true, mockGoldMkt)  -- 10g
-    NS.DB:RecordCharacterGold(76900, "Investor", baseNow - 1800, true, mockGoldMkt)  -- 7g 69s
+    -- 17. Per-Character Gold + Net Worth History & Filtered Step-Carry-Forward Aggregation
+    local mockGoldMkt = { charGold = {}, charGroups = {}, charMeta = {}, transfers = {}, postedDeposits = {}, ownedAuctions = {}, investments = {}, history = {} }
+    NS.DB:RecordCharacterGold(50000, "Investor", baseNow - 7200, true, mockGoldMkt, 0)      -- 5g liquid
+    NS.DB:RecordCharacterGold(100000, "Timbits", baseNow - 5400, true, mockGoldMkt, 20000)  -- 10g liquid + 2g stock
+    NS.DB:RecordCharacterGold(76900, "Investor", baseNow - 1800, true, mockGoldMkt, 30000)  -- 7g 69s liquid + 3g stock
     local gAll = NS.DB:GetGoldHistorySummary({ charFilter = "ALL", nowTs = baseNow, marketOverride = mockGoldMkt })
     local gInv = NS.DB:GetGoldHistorySummary({ charFilter = "CHAR:Investor", nowTs = baseNow, marketOverride = mockGoldMkt })
     local gGrp = NS.DB:GetGoldHistorySummary({ charFilter = "GROUP:_TestGroup_", nowTs = baseNow, marketOverride = mockGoldMkt })
     AssertEq("Gold ALL current total (7g69s + 10g)", gAll.currentTotal, 176900)
+    AssertEq("Gold ALL current Net Worth (+5g stock)", gAll.currentNetWorth, 226900)
     AssertEq("Gold ALL charCount = 2", gAll.charCount, 2)
     AssertEq("Gold Investor current total (7g 69s)", gInv.currentTotal, 76900)
+    AssertEq("Gold Investor Net Worth (10g 69s)", gInv.currentNetWorth, 106900)
     AssertEq("Gold Investor period delta (+2g 69s)", gInv.periodDelta, 26900)
     AssertEq("Gold Group filters to Investor only (7g 69s)", gGrp.currentTotal, 76900)
+
+    -- 18. Seed Capital, Alt Transfer Dedup, Deposit Burn Queue, & Undercut Check
+    NS.DB:SetCharacterSeedCapital("Investor", 50000, mockGoldMkt)
+    local okTr1 = NS.DB:RecordGoldTransfer("Timbits", "Investor", 50000, baseNow - 300, true, mockGoldMkt)
+    local okTr2 = NS.DB:RecordGoldTransfer("Timbits", "Investor", 50000, baseNow - 240, true, mockGoldMkt) -- dup within 15m!
+    AssertTrue("Transfer recorded once & deduped on pickup", okTr1 and (not okTr2))
+    local seedSum = NS.DB:GetFilteredSeedSummary("CHAR:Investor", mockGoldMkt)
+    AssertEq("Investor explicit seed = 5g", seedSum.effectiveSeed, 50000)
+    AssertEq("Investor transfersIn = 5g", seedSum.transfersIn, 50000)
+
+    NS.DB:AddPostedDeposit(2318, 20, 450, "Investor", baseNow - 1000, mockGoldMkt)
+    local depPop = NS.DB:ConsumePostedDeposit(2318, 20, "Investor", mockGoldMkt)
+    AssertEq("Posted deposit FIFO pop returns 450c", depPop, 450)
+
+    mockGoldMkt.history[2318] = { intraday = { { baseNow - 60, 80, 85, 90, 50 } }, daily = {}, lastScan = baseNow - 60 }
+    mockGoldMkt.investments[2318] = { qty = 100, avgCost = 85, totalCost = 8500 } -- break-even = 90c
+    NS.DB:SetOwnedAuctions("Investor", {
+        { auctionID = 777, itemID = 2318, name = "Light Leather", qty = 20, unitPrice = 95, totalBuyout = 1900 },
+    }, baseNow, mockGoldMkt)
+    local ownList, ownMeta = NS.DB:GetOwnedAuctionsView("CHAR:Investor", mockGoldMkt)
+    AssertEq("Undercut check finds 1 undercut", ownMeta.undercutCount, 1)
+    AssertEq("Undercut check flags below break-even (80c < 90c)", ownMeta.belowCostCount, 1)
+    AssertEq("Undercut amount = 15c", ownList[1] and ownList[1].undercutBy, 15)
+
     NS.DB:DeleteCharacterGroup("_TestGroup_")
 
     if failed == 0 then
