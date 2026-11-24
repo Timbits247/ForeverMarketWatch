@@ -187,7 +187,7 @@ local function CreateGoldChartWidget(parent)
                 hoverNetDot:SetPoint("CENTER", self, "BOTTOMLEFT", best.x, best.yNet)
                 hoverNetDot:Show()
                 hudRight:SetText(string.format(
-                    "|cFFC4B79E%s|r   Gold: |cFFFFD100%s|r  |  Net: |cFF42C8FA%s|r",
+                    "|cFFC4B79E%s|r   |cFFFFD100%s|r  |  |cFF42C8FA%s|r",
                     tStr,
                     NS.FormatMoney(best.copper, true),
                     NS.FormatMoney(best.netWorth, true)
@@ -195,13 +195,11 @@ local function CreateGoldChartWidget(parent)
             else
                 hoverNetDot:Hide()
                 local diff = best.copper - (lastData.startTotal or best.copper)
-                local dClr = (diff >= 0) and "|cFF38D972+" or "|cFFF55954"
                 hudRight:SetText(string.format(
-                    "|cFFC4B79E%s|r   |cFFFFD100%s|r  (%s%s|r)",
+                    "|cFFC4B79E%s|r   |cFFFFD100%s|r  (%s)",
                     tStr,
                     NS.FormatMoney(best.copper, true),
-                    dClr,
-                    NS.FormatMoney(diff, true)
+                    NS.FormatSignedMoney(diff, true)
                 ))
             end
         end
@@ -243,57 +241,49 @@ local function CreateGoldChartWidget(parent)
         endNetDot:Hide()
         hintTxt:Hide()
 
-        -- Build Header HUD
+        -- Build Clean Header HUD
         local cur = (goldData and goldData.currentTotal) or 0
         local curNW = (goldData and goldData.currentNetWorth) or cur
         local curInv = (goldData and goldData.currentInvValue) or 0
         local hasNW = lastShowNetWorth and curInv > 0
         local delta = hasNW and ((goldData and goldData.netWorthDelta) or 0) or ((goldData and goldData.periodDelta) or 0)
-        local dClr = (delta >= 0) and "|cFF38D972+" or "|cFFF55954"
         local pctVal = hasNW and (goldData and goldData.netWorthPct) or (goldData and goldData.periodPct)
-        local pctStr = pctVal and string.format(" %+.1f%%", pctVal) or ""
-        local tfTag = (days == 1 and "Today") or (days and (tostring(days) .. "D")) or "All"
+        local deltaChunk = ""
+        if delta ~= 0 then
+            local pStr = pctVal and (" " .. NS.FormatSignedPct(pctVal, 1)) or ""
+            deltaChunk = "   " .. NS.FormatSignedMoney(delta, true) .. pStr
+        end
 
         if hasNW then
             hudLeft:SetText(string.format(
-                "|cFFFFD100Gold (%s — %s):|r |cFFFFFFFF%s|r  |  |cFF42C8FANet Worth:|r |cFFFFFFFF%s|r %s%s%s|r",
-                lastScopeLabel,
-                tfTag,
+                "|cFFFFD100Gold|r |cFFFFFFFF%s|r   |cFF42C8FANet Worth|r |cFFFFFFFF%s|r%s",
                 NS.FormatMoney(cur, true),
                 NS.FormatMoney(curNW, true),
-                dClr,
-                NS.FormatMoney(delta, true),
-                pctStr
+                deltaChunk
             ))
         else
             hudLeft:SetText(string.format(
-                "|cFFFFD100Gold (%s — %s):|r  |cFFFFFFFF%s|r   %s%s%s|r",
-                lastScopeLabel,
-                tfTag,
+                "|cFFFFD100Gold|r |cFFFFFFFF%s|r%s",
                 NS.FormatMoney(cur, true),
-                dClr,
-                NS.FormatMoney(delta, true),
-                pctStr
+                deltaChunk
             ))
         end
 
-        -- Right HUD defaults to compact character breakdown (when >1 char) or hover hint
+        -- Right HUD defaults to compact top-2 alt split or minimal legend
         defaultRightText = ""
         if goldData and goldData.chars and #goldData.chars > 1 then
             local parts = {}
-            local limit = math.min(#goldData.chars, 3)
+            local limit = math.min(#goldData.chars, 2)
             for i = 1, limit do
                 local c = goldData.chars[i]
-                table.insert(parts, string.format("%s: |cFFFFD100%s|r", c.name, NS.FormatMoney(c.copper, true)))
+                table.insert(parts, string.format("%s |cFFFFD100%s|r", c.name, NS.FormatMoney(c.copper, true)))
             end
             if #goldData.chars > limit then
-                table.insert(parts, string.format("+%d more", #goldData.chars - limit))
+                table.insert(parts, string.format("+%d", #goldData.chars - limit))
             end
-            defaultRightText = "|cFFA89C86" .. table.concat(parts, "  |  ") .. "|r"
-        elseif goldData and goldData.charCount == 1 then
-            defaultRightText = hasNW
-                and "|cFFFFD100— Gold|r  |cFF42C8FA— Net Worth (+Stock)|r"
-                or "|cFFA89C86Hover graph for timestamps|r"
+            defaultRightText = "|cFFA89C86" .. table.concat(parts, "  ·  ") .. "|r"
+        elseif hasNW then
+            defaultRightText = "|cFFFFD100— Gold|r   |cFF42C8FA— Net Worth|r"
         end
         hudRight:SetText(defaultRightText)
 
@@ -316,7 +306,7 @@ local function CreateGoldChartWidget(parent)
         if #pts == 1 then
             drawPts[1] = { ts = pts[1].ts, copper = pts[1].copper, netWorth = pts[1].netWorth or pts[1].copper, frac = 0 }
             drawPts[2] = { ts = pts[1].ts, copper = pts[1].copper, netWorth = pts[1].netWorth or pts[1].copper, frac = 1 }
-            hintTxt:SetText("Live gold snapshot active — curve builds automatically as your gold changes or you log alts")
+            hintTxt:SetText("Live tracking active")
             hintTxt:Show()
         else
             local minTs = pts[1].ts
@@ -663,14 +653,14 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
     local kpiBar = NS.CreatePanel(frame, nil, NS.COLORS.BG_CARD, NS.COLORS.BORDER_ACCENT, false)
     kpiBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
     kpiBar:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0)
-    kpiBar:SetHeight(56)
+    kpiBar:SetHeight(50)
 
     local kpis = {
         { id = "gold",     title = "Total Gold" },
         { id = "realized", title = "Realized P&L" },
-        { id = "total",    title = "Total P&L (Incl. Stock)" },
-        { id = "winloss",  title = "Winners / Losers" },
-        { id = "best",     title = "Top Money-Maker" },
+        { id = "total",    title = "Total P&L" },
+        { id = "winloss",  title = "Win / Loss" },
+        { id = "best",     title = "Top Item" },
     }
     local kpiCols = {}
     frame._kpiValues = {}
@@ -678,12 +668,12 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
     for i = 1, #kpis do
         local col = CreateFrame("Frame", nil, kpiBar)
         local tLbl = col:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        tLbl:SetPoint("TOP", col, "TOP", 0, -8)
+        tLbl:SetPoint("TOP", col, "TOP", 0, -7)
         tLbl:SetText(kpis[i].title)
 
         local vLbl = col:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        vLbl:SetPoint("BOTTOMLEFT", col, "BOTTOMLEFT", 4, 10)
-        vLbl:SetPoint("BOTTOMRIGHT", col, "BOTTOMRIGHT", -4, 10)
+        vLbl:SetPoint("BOTTOMLEFT", col, "BOTTOMLEFT", 4, 8)
+        vLbl:SetPoint("BOTTOMRIGHT", col, "BOTTOMRIGHT", -4, 8)
         vLbl:SetJustifyH("CENTER")
         vLbl:SetWordWrap(false)
         vLbl:SetText("--")
@@ -698,7 +688,7 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
         for i = 1, #kpiCols do
             kpiCols[i]:ClearAllPoints()
             kpiCols[i]:SetPoint("TOPLEFT", kpiBar, "TOPLEFT", 6 + (i - 1) * cw, 0)
-            kpiCols[i]:SetSize(cw, 56)
+            kpiCols[i]:SetSize(cw, 50)
         end
     end
     kpiBar:SetScript("OnSizeChanged", LayoutKpis)
@@ -708,25 +698,25 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
     -- 2. TIMEFRAME, OUTCOME FILTER & SEARCH BAR
     ----------------------------------------------------------------------------
     local ctrlBar = NS.CreatePanel(frame, nil, NS.COLORS.BG_PANEL, NS.COLORS.BORDER, false)
-    ctrlBar:SetPoint("TOPLEFT", kpiBar, "BOTTOMLEFT", 0, -6)
-    ctrlBar:SetPoint("TOPRIGHT", kpiBar, "BOTTOMRIGHT", 0, -6)
-    ctrlBar:SetHeight(34)
+    ctrlBar:SetPoint("TOPLEFT", kpiBar, "BOTTOMLEFT", 0, -5)
+    ctrlBar:SetPoint("TOPRIGHT", kpiBar, "BOTTOMRIGHT", 0, -5)
+    ctrlBar:SetHeight(32)
 
     local tfBtns = {}
     local tfDefs = {
-        { key = "TODAY", days = 1,   label = "Today", w = 52 },
-        { key = "7D",    days = 7,   label = "7D",    w = 34 },
-        { key = "30D",   days = 30,  label = "30D",   w = 38 },
-        { key = "ALL",   days = nil, label = "All",   w = 36 },
+        { key = "TODAY", days = 1,   label = "Today", w = 46 },
+        { key = "7D",    days = 7,   label = "7D",    w = 30 },
+        { key = "30D",   days = 30,  label = "30D",   w = 34 },
+        { key = "ALL",   days = nil, label = "All",   w = 30 },
     }
     local prev = nil
     for i = 1, #tfDefs do
         local def = tfDefs[i]
         local b = NS.CreateButton(ctrlBar, def.label, def.w, 22, false)
         if not prev then
-            b:SetPoint("LEFT", ctrlBar, "LEFT", 8, 0)
+            b:SetPoint("LEFT", ctrlBar, "LEFT", 6, 0)
         else
-            b:SetPoint("LEFT", prev, "RIGHT", 3, 0)
+            b:SetPoint("LEFT", prev, "RIGHT", 2, 0)
         end
         b:SetScript("OnClick", function()
             selectedDays = def.days
@@ -738,14 +728,14 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
 
     local outBtns = {}
     local outDefs = {
-        { id = "ALL",     label = "All Items", w = 68 },
-        { id = "WINNERS", label = "Winners",   w = 62 },
-        { id = "LOSERS",  label = "Losers",    w = 56 },
+        { id = "ALL",     label = "All",  w = 32 },
+        { id = "WINNERS", label = "Win",  w = 38 },
+        { id = "LOSERS",  label = "Loss", w = 40 },
     }
     for i = 1, #outDefs do
         local def = outDefs[i]
         local b = NS.CreateButton(ctrlBar, def.label, def.w, 22, false)
-        b:SetPoint("LEFT", prev, "RIGHT", (i == 1) and 12 or 3, 0)
+        b:SetPoint("LEFT", prev, "RIGHT", (i == 1) and 8 or 2, 0)
         b:SetScript("OnClick", function()
             outcomeFilter = def.id
             frame:Refresh()
@@ -754,8 +744,8 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
         prev = b
     end
 
-    local searchBox, searchEB = NS.CreateEditBox(ctrlBar, 96, 22, "Filter...")
-    searchBox:SetPoint("LEFT", prev, "RIGHT", 6, 0)
+    local searchBox, searchEB = NS.CreateEditBox(ctrlBar, 114, 22, "Search...")
+    searchBox:SetPoint("LEFT", prev, "RIGHT", 8, 0)
     searchEB:SetScript("OnTextChanged", function(self)
         searchText = (self:GetText() or ""):lower():match("^%s*(.-)%s*$")
         frame:Refresh()
@@ -804,9 +794,9 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
     -- 3. TSM-STYLE GOLD BALANCE CHART PANEL (COLLAPSIBLE)
     ----------------------------------------------------------------------------
     local goldChart = CreateGoldChartWidget(frame)
-    goldChart:SetPoint("TOPLEFT", ctrlBar, "BOTTOMLEFT", 0, -6)
-    goldChart:SetPoint("TOPRIGHT", ctrlBar, "BOTTOMRIGHT", 0, -6)
-    goldChart:SetHeight(134)
+    goldChart:SetPoint("TOPLEFT", ctrlBar, "BOTTOMLEFT", 0, -5)
+    goldChart:SetPoint("TOPRIGHT", ctrlBar, "BOTTOMRIGHT", 0, -5)
+    goldChart:SetHeight(128)
 
     ----------------------------------------------------------------------------
     -- 4. PER-ITEM PROFIT ROLLUP TABLE
@@ -876,7 +866,7 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
 
     local scroll = CreateFrame("ScrollFrame", "ForeverMarketWatchProfitsScroll", tablePanel, "UIPanelScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", hdr, "BOTTOMLEFT", 0, -4)
-    scroll:SetPoint("BOTTOMRIGHT", tablePanel, "BOTTOMRIGHT", -26, 24)
+    scroll:SetPoint("BOTTOMRIGHT", tablePanel, "BOTTOMRIGHT", -26, 6)
 
     local child = CreateFrame("Frame", nil, scroll)
     child:SetWidth(720)
@@ -895,18 +885,12 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
     emptyTxt:SetTextColor(0.75, 0.68, 0.56, 1)
     emptyTxt:Hide()
 
-    local footer = tablePanel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    footer:SetPoint("BOTTOMLEFT", tablePanel, "BOTTOMLEFT", 10, 6)
-    footer:SetPoint("BOTTOMRIGHT", tablePanel, "BOTTOMRIGHT", -10, 6)
-    footer:SetJustifyH("LEFT")
-    footer:SetText("Total P&L = Locked-in Realized P&L + Unrealized P&L on remaining stock (after 5% AH cut)  |  Click any item to open its chart")
-
     local rows = {}
 
     local function GetOrCreateRow(idx)
         if rows[idx] then return rows[idx] end
         local r = CreateFrame("Button", nil, child)
-        r:SetHeight(37)
+        r:SetHeight(34)
 
         local bg = r:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
@@ -1072,12 +1056,10 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
             if seedCap > 0 then
                 local baseVal = (goldData.currentNetWorth and goldData.currentNetWorth > 0) and goldData.currentNetWorth or goldData.currentTotal
                 local roi = ((baseVal - seedCap) / seedCap) * 100
-                local roiClr = (roi >= 0) and "|cFF38D972" or "|cFFF55954"
                 self._kpiValues.gold:SetText(string.format(
-                    "|cFFFFD100%s|r (%s%+.0f%%|r)",
+                    "|cFFFFD100%s|r (%s)",
                     NS.FormatMoney(goldData.currentTotal, true),
-                    roiClr,
-                    roi
+                    NS.FormatSignedPct(roi, 0)
                 ))
             else
                 self._kpiValues.gold:SetText("|cFFFFD100" .. NS.FormatMoney(goldData.currentTotal, true) .. "|r")
@@ -1086,16 +1068,12 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
             self._kpiValues.gold:SetText("|cFF998C78--|r")
         end
 
-        local rClr = (totals.realizedPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
-        self._kpiValues.realized:SetText(rClr .. NS.FormatMoney(totals.realizedPnL, true) .. "|r")
-
-        local tClr = (totals.totalPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
-        self._kpiValues.total:SetText(tClr .. NS.FormatMoney(totals.totalPnL, true) .. "|r")
-
-        self._kpiValues.winloss:SetText(string.format("|cFF38D972%d Win|r  /  |cFFF55954%d Loss|r", totals.winners, totals.losers))
+        self._kpiValues.realized:SetText(NS.FormatSignedMoney(totals.realizedPnL, true))
+        self._kpiValues.total:SetText(NS.FormatSignedMoney(totals.totalPnL, true))
+        self._kpiValues.winloss:SetText(string.format("|cFF38D972%d|r / |cFFF55954%d|r", totals.winners, totals.losers))
 
         if totals.bestItem and totals.bestItem.totalPnL > 0 then
-            self._kpiValues.best:SetText(string.format("%s (|cFF38D972+%s|r)", totals.bestItem.name, NS.FormatMoney(totals.bestItem.totalPnL, true)))
+            self._kpiValues.best:SetText(string.format("%s (%s)", totals.bestItem.name, NS.FormatSignedMoney(totals.bestItem.totalPnL, true)))
         else
             self._kpiValues.best:SetText("|cFF998C78--|r")
         end
@@ -1152,7 +1130,7 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
             end
         end
 
-        local rowH = 38
+        local rowH = 35
         local w = scroll:GetWidth()
         if w and w > 100 then child:SetWidth(w) end
 
@@ -1183,12 +1161,12 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
             if d.buyCount > 0 or d.sellCount > 0 then
                 table.insert(subParts, string.format("%dB / %dS", d.buyCount, d.sellCount))
             else
-                table.insert(subParts, "Open Inventory")
+                table.insert(subParts, "Held")
             end
             if d.depositLoss and d.depositLoss > 0 then
                 table.insert(subParts, "|cFFFFA030Dep: -" .. NS.FormatMoney(d.depositLoss, true) .. "|r")
             end
-            row.subTxt:SetText(table.concat(subParts, "  |  "))
+            row.subTxt:SetText(table.concat(subParts, "  ·  "))
 
             if d.buyQty > 0 then
                 row.buyTop:SetText("|cFF42A8FA" .. NS.FormatMoney(d.buyTotal, true) .. "|r")
@@ -1215,12 +1193,11 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
             end
 
             if d.sellCount > 0 or d.matchedSellCount > 0 then
-                local rc = (d.realizedPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
-                row.realTop:SetText(rc .. NS.FormatMoney(d.realizedPnL, true) .. "|r")
+                row.realTop:SetText(NS.FormatSignedMoney(d.realizedPnL, true))
                 if d.isFarmedOnly then
-                    row.realBot:SetText("Farmed/Craft")
+                    row.realBot:SetText("Farmed")
                 elseif d.realizedRoiPct then
-                    row.realBot:SetText(string.format("%s%+.1f%%|r", rc, d.realizedRoiPct))
+                    row.realBot:SetText(NS.FormatSignedPct(d.realizedRoiPct, 1))
                 else
                     row.realBot:SetText("")
                 end
@@ -1229,12 +1206,11 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
                 row.realBot:SetText("")
             end
 
-            local tc = (d.totalPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
-            row.totTop:SetText(tc .. NS.FormatMoney(d.totalPnL, true) .. "|r")
+            row.totTop:SetText(NS.FormatSignedMoney(d.totalPnL, true))
             if d.isFarmedOnly then
-                row.totBot:SetText("Net Sale")
+                row.totBot:SetText("")
             elseif d.totalRoiPct then
-                row.totBot:SetText(string.format("%s%+.1f%%|r", tc, d.totalRoiPct))
+                row.totBot:SetText(NS.FormatSignedPct(d.totalRoiPct, 1))
             else
                 row.totBot:SetText("")
             end

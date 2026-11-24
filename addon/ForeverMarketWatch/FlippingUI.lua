@@ -446,9 +446,8 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
                     card.snipeTxt:SetText("|cFF22EB70Scan for exact qty|r")
                 end
             elseif d.zone == "SELL" and sum.investQty and sum.investQty > 0 then
-                local pClr = (sum.investUnrealizedPnL and sum.investUnrealizedPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
-                card.snipeTxt:SetText(string.format("|cFFFFD100Inv:%d|r %s%s|r",
-                    sum.investQty, pClr, sum.investUnrealizedPnL and NS.FormatMoney(sum.investUnrealizedPnL, true) or ""))
+                card.snipeTxt:SetText(string.format("|cFFFFD100Inv %d|r %s",
+                    sum.investQty, sum.investUnrealizedPnL and NS.FormatSignedMoney(sum.investUnrealizedPnL, true) or ""))
             elseif d.targetSpreadPct ~= nil then
                 local spClr = (d.targetSpreadPct >= 15) and "|cFF38D972" or ((d.targetSpreadPct >= 5) and "|cFFFFD100" or "|cFFF55954")
                 card.snipeTxt:SetText(string.format("Spread: %s%+.0f%% net|r", spClr, d.targetSpreadPct))

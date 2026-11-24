@@ -39,14 +39,14 @@ function Dashboard.Create(parent, onOpenItem)
     local portBar = NS.CreatePanel(frame, nil, NS.COLORS.BG_CARD, NS.COLORS.BORDER_ACCENT, false)
     portBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
     portBar:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0)
-    portBar:SetHeight(56)
+    portBar:SetHeight(50)
 
     local portKpis = {
-        { id = "invested", title = "All-Alts Invested" },
-        { id = "netVal",   title = "Est. Net Value (5% Cut)" },
+        { id = "invested", title = "Invested" },
+        { id = "netVal",   title = "Est. Net Value" },
         { id = "unreal",   title = "Unrealized P&L" },
         { id = "realized", title = "Booked Profit" },
-        { id = "status",   title = "Positions / API" },
+        { id = "status",   title = "Active / Sync" },
     }
     local portCols = {}
     frame._portValues = {}
@@ -54,11 +54,14 @@ function Dashboard.Create(parent, onOpenItem)
     for i = 1, #portKpis do
         local col = CreateFrame("Frame", nil, portBar)
         local tLbl = col:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        tLbl:SetPoint("TOP", col, "TOP", 0, -8)
+        tLbl:SetPoint("TOP", col, "TOP", 0, -7)
         tLbl:SetText(portKpis[i].title)
 
-        local vLbl = col:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        vLbl:SetPoint("BOTTOM", col, "BOTTOM", 0, 10)
+        local vLbl = col:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        vLbl:SetPoint("BOTTOMLEFT", col, "BOTTOMLEFT", 4, 8)
+        vLbl:SetPoint("BOTTOMRIGHT", col, "BOTTOMRIGHT", -4, 8)
+        vLbl:SetJustifyH("CENTER")
+        vLbl:SetWordWrap(false)
         vLbl:SetText("--")
 
         frame._portValues[portKpis[i].id] = vLbl
@@ -71,7 +74,7 @@ function Dashboard.Create(parent, onOpenItem)
         for i = 1, #portCols do
             portCols[i]:ClearAllPoints()
             portCols[i]:SetPoint("TOPLEFT", portBar, "TOPLEFT", 6 + (i - 1) * cw, 0)
-            portCols[i]:SetSize(cw, 56)
+            portCols[i]:SetSize(cw, 50)
         end
     end
     portBar:SetScript("OnSizeChanged", LayoutPortCols)
@@ -81,14 +84,14 @@ function Dashboard.Create(parent, onOpenItem)
     -- 2. FULL-HEIGHT PINNED INVESTMENTS & WATCH CARDS GRID (DRAG-AND-DROP)
     ----------------------------------------------------------------------------
     local pinnedPanel = NS.CreatePanel(frame, nil, NS.COLORS.BG_PANEL, NS.COLORS.BORDER, false)
-    pinnedPanel:SetPoint("TOPLEFT", portBar, "BOTTOMLEFT", 0, -6)
+    pinnedPanel:SetPoint("TOPLEFT", portBar, "BOTTOMLEFT", 0, -5)
     pinnedPanel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
 
     local pinTitle = pinnedPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    pinTitle:SetPoint("TOPLEFT", 12, -10)
-    pinTitle:SetText("Pinned Investments & Market Watch (Today 00:00 -> 24:00)")
+    pinTitle:SetPoint("TOPLEFT", 12, -9)
+    pinTitle:SetText("Pinned & Holdings")
 
-    local scanBtn = NS.CreateButton(pinnedPanel, "Scan Pinned", 96, 21, true)
+    local scanBtn = NS.CreateButton(pinnedPanel, "Scan Pinned", 92, 21, true)
     scanBtn:SetPoint("TOPRIGHT", pinnedPanel, "TOPRIGHT", -10, -6)
     scanBtn:SetScript("OnClick", function()
         if NS.Scanner:IsScanning() then
@@ -99,13 +102,9 @@ function Dashboard.Create(parent, onOpenItem)
     end)
     frame._scanBtn = scanBtn
 
-    local pinHint = pinnedPanel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    pinHint:SetPoint("RIGHT", scanBtn, "LEFT", -10, 0)
-    pinHint:SetText("Drag to reorder  |  Click for chart")
-
     local pinScroll = CreateFrame("ScrollFrame", "ForeverMarketWatchDashScroll", pinnedPanel, "UIPanelScrollFrameTemplate")
-    pinScroll:SetPoint("TOPLEFT", pinnedPanel, "TOPLEFT", 10, -32)
-    pinScroll:SetPoint("BOTTOMRIGHT", pinnedPanel, "BOTTOMRIGHT", -28, 10)
+    pinScroll:SetPoint("TOPLEFT", pinnedPanel, "TOPLEFT", 10, -30)
+    pinScroll:SetPoint("BOTTOMRIGHT", pinnedPanel, "BOTTOMRIGHT", -28, 8)
 
     local pinChild = CreateFrame("Frame", nil, pinScroll)
     pinChild:SetWidth(720)
@@ -314,19 +313,16 @@ function Dashboard.Create(parent, onOpenItem)
     function frame:Refresh()
         -- 1. Account-Wide Portfolio Summary
         local port = NS.DB:GetPortfolioSummary()
-        self._portValues.invested:SetText(NS.FormatMoney(port.totalInvested, false))
-        self._portValues.netVal:SetText(NS.FormatMoney(port.estNetValue, false))
+        self._portValues.invested:SetText(NS.FormatMoney(port.totalInvested, true))
+        self._portValues.netVal:SetText(NS.FormatMoney(port.estNetValue, true))
 
-        local uClr = (port.unrealizedPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
-        local uPct = (port.totalInvested > 0) and ((port.unrealizedPnL / port.totalInvested) * 100) or 0
-        self._portValues.unreal:SetText(string.format("%s%s (%+.1f%%)|r", uClr, NS.FormatMoney(port.unrealizedPnL, true), uPct))
-
-        local rClr = (port.realizedProfit >= 0) and "|cFF38D972+" or "|cFFF55954"
-        self._portValues.realized:SetText(rClr .. NS.FormatMoney(port.realizedProfit, true) .. "|r")
+        local uPctStr = (port.totalInvested > 0) and (" (" .. NS.FormatSignedPct((port.unrealizedPnL / port.totalInvested) * 100, 1) .. ")") or ""
+        self._portValues.unreal:SetText(NS.FormatSignedMoney(port.unrealizedPnL, true) .. uPctStr)
+        self._portValues.realized:SetText(NS.FormatSignedMoney(port.realizedProfit, true))
 
         local apiTs = NS.DB:GetExternalSyncTimestamp()
-        local apiTxt = (apiTs > 0) and ("|cFF38D972API " .. NS.FormatRelativeTime(apiTs) .. "|r") or "Local"
-        self._portValues.status:SetText(string.format("%d Active  |  %s", port.activePositions, apiTxt))
+        local apiTxt = (apiTs > 0) and ("|cFF38D972" .. NS.FormatRelativeTime(apiTs) .. "|r") or "Local"
+        self._portValues.status:SetText(string.format("%d Active · %s", port.activePositions, apiTxt))
 
         -- 2. Full-Height Pinned Cards Grid (3 columns, larger 50px sparklines, drag-and-drop reorderable)
         local pinnedIDs = NS.DB:GetDashboardPinnedIDs()
@@ -372,19 +368,16 @@ function Dashboard.Create(parent, onOpenItem)
             card.priceTxt:SetText(sum.latestMin and NS.FormatMoney(sum.latestMin, true) or "--")
 
             if dayCtx and dayCtx.dayDeltaPct ~= nil then
-                local dClr = (dayCtx.dayDeltaPct >= 0) and "|cFF38D972+" or "|cFFF55954"
-                card.deltaTxt:SetText(string.format("%s%.1f%%|r", dClr, dayCtx.dayDeltaPct))
+                card.deltaTxt:SetText(NS.FormatSignedPct(dayCtx.dayDeltaPct, 1))
             else
                 card.deltaTxt:SetText("|cFF998C780.0%|r")
             end
 
             if sum.investQty and sum.investQty > 0 then
-                local pClr = (sum.investUnrealizedPnL and sum.investUnrealizedPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
-                card.footTxt:SetText(string.format("Inv: %d (%s)  %s%s|r",
+                card.footTxt:SetText(string.format("Inv %d (%s)  %s",
                     sum.investQty,
                     (sum.investment and sum.investment.holder) or "Alt",
-                    pClr,
-                    sum.investUnrealizedPnL and NS.FormatMoney(sum.investUnrealizedPnL, true) or "--"
+                    sum.investUnrealizedPnL and NS.FormatSignedMoney(sum.investUnrealizedPnL, true) or "--"
                 ))
             else
                 local swStr = "--"

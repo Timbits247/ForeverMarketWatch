@@ -85,7 +85,7 @@ function Standalone:GetOrCreateWindow()
 
     local titleText = titleBar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     titleText:SetPoint("LEFT", titleIcon, "RIGHT", 7, 0)
-    titleText:SetText("ForeverMarketWatch  |cFFC4B79E— Auction House Market Ledger (v" .. NS.VERSION .. ")|r")
+    titleText:SetText("ForeverMarketWatch  |cFFA89C86v" .. NS.VERSION .. "|r")
 
     -- Native Classic WoW red close button
     local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")

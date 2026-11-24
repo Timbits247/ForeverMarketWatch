@@ -46,14 +46,14 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
     local kpiBar = NS.CreatePanel(frame, nil, NS.COLORS.BG_CARD, NS.COLORS.BORDER_ACCENT, false)
     kpiBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
     kpiBar:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0)
-    kpiBar:SetHeight(56)
+    kpiBar:SetHeight(50)
 
     local kpis = {
-        { id = "cost",     title = "Inventory Cost Basis" },
-        { id = "value",    title = "Est. Net Value (5% Cut)" },
+        { id = "cost",     title = "Cost Basis" },
+        { id = "value",    title = "Est. Net Value" },
         { id = "unreal",   title = "Unrealized P&L" },
-        { id = "realized", title = "Booked Profit (All Time)" },
-        { id = "counts",   title = "Open Positions / Units" },
+        { id = "realized", title = "Booked Profit" },
+        { id = "counts",   title = "Positions" },
     }
     local kpiCols = {}
     frame._kpiValues = {}
@@ -61,11 +61,14 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
     for i = 1, #kpis do
         local col = CreateFrame("Frame", nil, kpiBar)
         local tLbl = col:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        tLbl:SetPoint("TOP", col, "TOP", 0, -8)
+        tLbl:SetPoint("TOP", col, "TOP", 0, -7)
         tLbl:SetText(kpis[i].title)
 
-        local vLbl = col:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        vLbl:SetPoint("BOTTOM", col, "BOTTOM", 0, 10)
+        local vLbl = col:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        vLbl:SetPoint("BOTTOMLEFT", col, "BOTTOMLEFT", 4, 8)
+        vLbl:SetPoint("BOTTOMRIGHT", col, "BOTTOMRIGHT", -4, 8)
+        vLbl:SetJustifyH("CENTER")
+        vLbl:SetWordWrap(false)
         vLbl:SetText("--")
 
         frame._kpiValues[kpis[i].id] = vLbl
@@ -78,7 +81,7 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
         for i = 1, #kpiCols do
             kpiCols[i]:ClearAllPoints()
             kpiCols[i]:SetPoint("TOPLEFT", kpiBar, "TOPLEFT", 6 + (i - 1) * cw, 0)
-            kpiCols[i]:SetSize(cw, 56)
+            kpiCols[i]:SetSize(cw, 50)
         end
     end
     kpiBar:SetScript("OnSizeChanged", LayoutKpis)
@@ -88,9 +91,9 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
     -- 2. CONTROLS & FILTER BAR
     ----------------------------------------------------------------------------
     local ctrlBar = NS.CreatePanel(frame, nil, NS.COLORS.BG_PANEL, NS.COLORS.BORDER, false)
-    ctrlBar:SetPoint("TOPLEFT", kpiBar, "BOTTOMLEFT", 0, -6)
-    ctrlBar:SetPoint("TOPRIGHT", kpiBar, "BOTTOMRIGHT", 0, -6)
-    ctrlBar:SetHeight(34)
+    ctrlBar:SetPoint("TOPLEFT", kpiBar, "BOTTOMLEFT", 0, -5)
+    ctrlBar:SetPoint("TOPRIGHT", kpiBar, "BOTTOMRIGHT", 0, -5)
+    ctrlBar:SetHeight(32)
 
     local filterBtns = {}
     local filterDefs = {
@@ -124,29 +127,21 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
     end)
     searchEB:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
 
-    local charDrop = NS.CreateDropdown(ctrlBar, 110, 22, function(val)
-        if NS.UI and NS.UI.SetCharFilter then
-            NS.UI.SetCharFilter(val)
-        end
-    end)
-    charDrop:SetPoint("LEFT", searchBox, "RIGHT", 6, 0)
-
     local altsBtn = NS.CreateButton(ctrlBar, "Alts", 34, 22, false)
-    altsBtn:SetPoint("LEFT", charDrop, "RIGHT", 3, 0)
+    altsBtn:SetPoint("RIGHT", ctrlBar, "RIGHT", -6, 0)
     altsBtn:SetScript("OnClick", function(self)
         if onOpenCharGroups then onOpenCharGroups(self) end
     end)
 
-    local autoTrackBtn = NS.CreateButton(ctrlBar, "Auto: ON", 74, 22, false)
-    autoTrackBtn:SetPoint("RIGHT", ctrlBar, "RIGHT", -6, 0)
-    autoTrackBtn:SetScript("OnClick", function()
-        local s = NS.DB:GetSettings()
-        s.autoTrackLedger = not (s.autoTrackLedger ~= false)
-        NS:FireCallback("DATA_UPDATED", nil, "SETTINGS_CHANGED")
+    local charDrop = NS.CreateDropdown(ctrlBar, 114, 22, function(val)
+        if NS.UI and NS.UI.SetCharFilter then
+            NS.UI.SetCharFilter(val)
+        end
     end)
+    charDrop:SetPoint("RIGHT", altsBtn, "LEFT", -3, 0)
 
-    local checkUndercutBtn = NS.CreateButton(ctrlBar, "Check Undercuts", 108, 22, true)
-    checkUndercutBtn:SetPoint("RIGHT", autoTrackBtn, "LEFT", -4, 0)
+    local checkUndercutBtn = NS.CreateButton(ctrlBar, "Undercuts", 76, 22, true)
+    checkUndercutBtn:SetPoint("RIGHT", charDrop, "LEFT", -4, 0)
     checkUndercutBtn:SetScript("OnClick", function()
         stockFilter = "AUCTIONS"
         if NS.Scanner and NS.Scanner.ScanMyAuctions then
@@ -203,7 +198,7 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
 
     local scroll = CreateFrame("ScrollFrame", "ForeverMarketWatchInvScroll", tablePanel, "UIPanelScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", hdr, "BOTTOMLEFT", 0, -4)
-    scroll:SetPoint("BOTTOMRIGHT", tablePanel, "BOTTOMRIGHT", -26, 24)
+    scroll:SetPoint("BOTTOMRIGHT", tablePanel, "BOTTOMRIGHT", -26, 6)
 
     local child = CreateFrame("Frame", nil, scroll)
     child:SetWidth(720)
@@ -222,18 +217,12 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
     emptyTxt:SetTextColor(0.75, 0.68, 0.56, 1)
     emptyTxt:Hide()
 
-    local footer = tablePanel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    footer:SetPoint("BOTTOMLEFT", tablePanel, "BOTTOMLEFT", 10, 6)
-    footer:SetPoint("BOTTOMRIGHT", tablePanel, "BOTTOMRIGHT", -10, 6)
-    footer:SetJustifyH("LEFT")
-    footer:SetText("Auto-populated from AH purchases & decremented on Mailbox sales  |  Left-click: Chart  |  Right-click: Edit  |  x: Remove")
-
     local rows = {}
 
     local function GetOrCreateRow(idx)
         if rows[idx] then return rows[idx] end
         local r = CreateFrame("Button", nil, child)
-        r:SetHeight(37)
+        r:SetHeight(34)
         r:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
         local bg = r:CreateTexture(nil, "BACKGROUND")
@@ -341,10 +330,6 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
         for id, btn in pairs(filterBtns) do
             btn:SetActiveState(id == stockFilter)
         end
-        local s = NS.DB:GetSettings()
-        local trackingOn = (s.autoTrackLedger ~= false)
-        autoTrackBtn:SetTextLabel("Auto: " .. (trackingOn and "|cFF38D972ON|r" or "|cFFF55954OFF|r"))
-        autoTrackBtn:SetActiveState(trackingOn)
 
         local charFilter = (NS.UI and NS.UI.GetCharFilter and NS.UI.GetCharFilter()) or "ALL"
         charDrop:SetOptions(NS.DB:GetCharacterFilterOptions())
@@ -364,13 +349,10 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
         self._kpiValues.cost:SetText(NS.FormatMoney(port.totalInvested, true))
         self._kpiValues.value:SetText(NS.FormatMoney(port.estNetValue, true))
 
-        local uClr = (port.unrealizedPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
-        local uPct = (port.totalInvested > 0) and string.format(" (%.1f%%)", (port.unrealizedPnL / port.totalInvested) * 100) or ""
-        self._kpiValues.unreal:SetText(uClr .. NS.FormatMoney(port.unrealizedPnL, true) .. uPct .. "|r")
-
-        local rClr = (port.realizedProfit >= 0) and "|cFF38D972+" or "|cFFF55954"
-        self._kpiValues.realized:SetText(rClr .. NS.FormatMoney(port.realizedProfit, true) .. "|r")
-        self._kpiValues.counts:SetText(string.format("|cFFFFD100%d|r items  (|cFFFFD100%d|r units)", port.activePositions or 0, port.totalUnits or 0))
+        local uPctStr = (port.totalInvested > 0) and (" (" .. NS.FormatSignedPct((port.unrealizedPnL / port.totalInvested) * 100, 1) .. ")") or ""
+        self._kpiValues.unreal:SetText(NS.FormatSignedMoney(port.unrealizedPnL, true) .. uPctStr)
+        self._kpiValues.realized:SetText(NS.FormatSignedMoney(port.realizedProfit, true))
+        self._kpiValues.counts:SetText(string.format("|cFFFFD100%d|r items · |cFFFFD100%d|r units", port.activePositions or 0, port.totalUnits or 0))
 
         local ahOpen = NS.Scanner and NS.Scanner:IsAuctionHouseOpen()
 
@@ -380,7 +362,6 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
             hdrBtns[4].txt:SetText("Break-Even")
             hdrBtns[5].txt:SetText("AH Min")
             hdrBtns[6].txt:SetText("Status")
-            footer:SetText("Click 'Check Undercuts' at the AH to scan your live listings  |  Red BELOW COST warns before undercutting into a loss!")
 
             local filtered = {}
             for i = 1, #ownedList do
@@ -396,10 +377,10 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
 
             emptyTxt:SetShown(#filtered == 0)
             if #filtered == 0 then
-                emptyTxt:SetText("No active posted auctions cached for this filter yet.\n\nOpen the Auction House and click 'Check Undercuts' to scan\nyour live listings and compare against AH min & Break-Even!")
+                emptyTxt:SetText("No active auctions cached yet.\n\nClick 'Undercuts' at the Auction House to scan your listings.")
             end
 
-            local rowH = 38
+            local rowH = 35
             local w = scroll:GetWidth()
             if w and w > 100 then child:SetWidth(w) end
 
@@ -472,8 +453,6 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
             child:SetHeight(math.max(1, #filtered * rowH))
             return
         end
-
-        footer:SetText("Auto-populated from AH buys & Mailbox sales  |  'Post': Jump to Sell tab with Break-Even floor  |  Right-click: Edit")
 
         -- 4. Update sort header indicators (Stock view)
         for i = 1, #hdrBtns do
@@ -574,7 +553,7 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
             end
         end
 
-        local rowH = 38
+        local rowH = 35
         local w = scroll:GetWidth()
         if w and w > 100 then child:SetWidth(w) end
 
@@ -596,25 +575,22 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
             local holder = (d.inv and d.inv.holder and d.inv.holder ~= "") and d.inv.holder or "Alt"
             local subParts = { holder }
             if d.realizedProfit ~= 0 then
-                local rpClr = (d.realizedProfit >= 0) and "|cFF38D972+" or "|cFFF55954"
-                table.insert(subParts, "Booked: " .. rpClr .. NS.FormatMoney(d.realizedProfit, true) .. "|r")
+                table.insert(subParts, "Booked " .. NS.FormatSignedMoney(d.realizedProfit, true))
             end
-            row.subTxt:SetText(table.concat(subParts, "  |  "))
+            row.subTxt:SetText(table.concat(subParts, "  ·  "))
 
             row.qtyTxt:SetText(d.qty > 0 and ("|cFFFFD100" .. tostring(d.qty) .. "|r") or "|cFF8A7E6B0|r")
-            row.bagTxt:SetText(d.bagCount > 0 and ("Bags: " .. tostring(d.bagCount)) or "")
+            row.bagTxt:SetText(d.bagCount > 0 and ("Bags " .. tostring(d.bagCount)) or "")
 
             row.costTxt:SetText(d.avgCost > 0 and NS.FormatMoney(d.avgCost, true) or "--")
             row.beTxt:SetText(d.breakEven > 0 and ("|cFFFFCC33" .. NS.FormatMoney(d.breakEven, true) .. "|r") or "--")
             row.mktTxt:SetText(d.mktPrice and NS.FormatMoney(d.mktPrice, true) or "|cFF8A7E6B--|r")
 
             if d.qty > 0 and d.unrealPnL ~= nil then
-                local clr = (d.unrealPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
-                row.pnlTxt:SetText(clr .. NS.FormatMoney(d.unrealPnL, true) .. "|r")
-                row.pnlPctTxt:SetText(d.unrealPct and string.format("%s%+.1f%%|r", clr, d.unrealPct) or "")
+                row.pnlTxt:SetText(NS.FormatSignedMoney(d.unrealPnL, true))
+                row.pnlPctTxt:SetText(d.unrealPct and NS.FormatSignedPct(d.unrealPct, 1) or "")
             elseif d.qty <= 0 then
-                local clr = (d.realizedProfit >= 0) and "|cFF38D972+" or "|cFFF55954"
-                row.pnlTxt:SetText(clr .. NS.FormatMoney(d.realizedProfit, true) .. "|r")
+                row.pnlTxt:SetText(NS.FormatSignedMoney(d.realizedProfit, true))
                 row.pnlPctTxt:SetText("|cFF998C78Booked|r")
             else
                 row.pnlTxt:SetText("|cFF8A7E6B--|r")

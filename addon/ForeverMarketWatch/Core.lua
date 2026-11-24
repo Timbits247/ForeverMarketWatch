@@ -6,7 +6,7 @@
 local ADDON_NAME, NS = ...
 
 NS.ADDON_NAME = ADDON_NAME
-NS.VERSION = "2.4.0"
+NS.VERSION = "2.4.1"
 NS.SCHEMA_VERSION = 5
 
 -- Classic WoW Auction House visual palette (warm parchment/stone + gold/bronze)
@@ -249,6 +249,34 @@ function NS.FormatMoney(copper, compact)
     end
     table.insert(parts, string.format("|cFFFFFFFF%02d|r%s", cop, COPPER_ICON))
     return prefix .. table.concat(parts, " ")
+end
+
+-- Signed colored money string (never produces "++" or "+-").
+function NS.FormatSignedMoney(copper, compact)
+    if not copper or type(copper) ~= "number" then
+        return "|cFF998C78--|r"
+    end
+    local val = math.floor(copper + (copper >= 0 and 0.5 or -0.5))
+    if val > 0 then
+        return "|cFF38D972+" .. NS.FormatMoney(val, compact ~= false) .. "|r"
+    elseif val < 0 then
+        return "|cFFF55954" .. NS.FormatMoney(val, compact ~= false) .. "|r"
+    end
+    return "|cFFC4B79E" .. NS.FormatMoney(0, compact ~= false) .. "|r"
+end
+
+-- Signed colored percentage string (never produces "++").
+function NS.FormatSignedPct(pct, decimals)
+    if not pct or type(pct) ~= "number" then
+        return ""
+    end
+    local fmt = (decimals == 0) and "%+.0f%%" or "%+.1f%%"
+    if pct > 0.04 then
+        return "|cFF38D972" .. string.format(fmt, pct) .. "|r"
+    elseif pct < -0.04 then
+        return "|cFFF55954" .. string.format(fmt, pct) .. "|r"
+    end
+    return "|cFFC4B79E0.0%|r"
 end
 
 function NS.FormatMoneyPlain(copper)

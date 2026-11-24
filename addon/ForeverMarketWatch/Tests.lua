@@ -270,6 +270,8 @@ function NS.RunSelfTests()
     AssertEq("FormatMoneyPlain with copper", NS.FormatMoneyPlain(25025), "2g 50s 25c")
     AssertEq("FormatMoney compact includes copper", NS.FormatMoney(125432, true), "12g 54s 32c")
     AssertTrue("FormatMoney full includes Copper icon", (NS.FormatMoney(125432, false):find("UI%-CopperIcon") ~= nil))
+    AssertTrue("FormatSignedMoney has no double plus", (NS.FormatSignedMoney(12500, true):find("%+%+") == nil))
+    AssertTrue("FormatSignedPct has no double plus", (NS.FormatSignedPct(18.5, 1):find("%+%+") == nil))
 
     -- 2. Profession catalog & offline search
     AssertTrue("Catalog populated (>=100 mats)", NS.Catalog and #NS.Catalog.ITEMS >= 100)

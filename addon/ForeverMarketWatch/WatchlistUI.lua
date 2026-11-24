@@ -2865,9 +2865,9 @@ function UI.RefreshAll()
     -- Update top status bar
     if mainView._navStatusTxt then
         local apiTs = NS.DB:GetExternalSyncTimestamp()
-        local apiTag = (apiTs > 0) and ("|cFF38D972API Sync: " .. NS.FormatRelativeTime(apiTs) .. "|r") or "Local Scans"
-        local modeTag = NS.DB:IsDemoMode() and "|cFFFFD100DEMO PREVIEW|r  |  " or ""
-        mainView._navStatusTxt:SetText(modeTag .. NS.DB:GetActiveMarketKey() .. "  |  " .. apiTag)
+        local apiTag = (apiTs > 0) and ("|cFF38D972Synced " .. NS.FormatRelativeTime(apiTs) .. "|r") or "Local"
+        local modeTag = NS.DB:IsDemoMode() and "|cFFFFD100DEMO|r · " or ""
+        mainView._navStatusTxt:SetText(modeTag .. NS.DB:GetActiveMarketKey() .. " · " .. apiTag)
     end
 
     if selectedPage == "DASHBOARD" then

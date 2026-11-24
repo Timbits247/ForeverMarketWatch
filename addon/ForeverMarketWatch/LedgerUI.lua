@@ -33,14 +33,14 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
     local kpiBar = NS.CreatePanel(frame, nil, NS.COLORS.BG_CARD, NS.COLORS.BORDER_ACCENT, false)
     kpiBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
     kpiBar:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0)
-    kpiBar:SetHeight(56)
+    kpiBar:SetHeight(50)
 
     local kpis = {
-        { id = "bought",   title = "Total Bought" },
-        { id = "sold",     title = "Net Sales (After Cut)" },
-        { id = "cashflow", title = "Net Cashflow" },
-        { id = "profit",   title = "Realized Gain / Loss" },
-        { id = "meta",     title = "Trades / AH Fees" },
+        { id = "bought",   title = "Bought" },
+        { id = "sold",     title = "Net Sales" },
+        { id = "cashflow", title = "Cashflow" },
+        { id = "profit",   title = "Realized P&L" },
+        { id = "meta",     title = "Trades / Fees" },
     }
     local kpiCols = {}
     frame._kpiValues = {}
@@ -48,11 +48,14 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
     for i = 1, #kpis do
         local col = CreateFrame("Frame", nil, kpiBar)
         local tLbl = col:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        tLbl:SetPoint("TOP", col, "TOP", 0, -8)
+        tLbl:SetPoint("TOP", col, "TOP", 0, -7)
         tLbl:SetText(kpis[i].title)
 
-        local vLbl = col:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        vLbl:SetPoint("BOTTOM", col, "BOTTOM", 0, 10)
+        local vLbl = col:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        vLbl:SetPoint("BOTTOMLEFT", col, "BOTTOMLEFT", 4, 8)
+        vLbl:SetPoint("BOTTOMRIGHT", col, "BOTTOMRIGHT", -4, 8)
+        vLbl:SetJustifyH("CENTER")
+        vLbl:SetWordWrap(false)
         vLbl:SetText("--")
 
         frame._kpiValues[kpis[i].id] = vLbl
@@ -65,7 +68,7 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
         for i = 1, #kpiCols do
             kpiCols[i]:ClearAllPoints()
             kpiCols[i]:SetPoint("TOPLEFT", kpiBar, "TOPLEFT", 6 + (i - 1) * cw, 0)
-            kpiCols[i]:SetSize(cw, 56)
+            kpiCols[i]:SetSize(cw, 50)
         end
     end
     kpiBar:SetScript("OnSizeChanged", LayoutKpis)
@@ -75,9 +78,9 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
     -- 2. TIMEFRAME, TYPE FILTER & SEARCH BAR
     ----------------------------------------------------------------------------
     local ctrlBar = NS.CreatePanel(frame, nil, NS.COLORS.BG_PANEL, NS.COLORS.BORDER, false)
-    ctrlBar:SetPoint("TOPLEFT", kpiBar, "BOTTOMLEFT", 0, -6)
-    ctrlBar:SetPoint("TOPRIGHT", kpiBar, "BOTTOMRIGHT", 0, -6)
-    ctrlBar:SetHeight(34)
+    ctrlBar:SetPoint("TOPLEFT", kpiBar, "BOTTOMLEFT", 0, -5)
+    ctrlBar:SetPoint("TOPRIGHT", kpiBar, "BOTTOMRIGHT", 0, -5)
+    ctrlBar:SetHeight(32)
 
     local tfBtns = {}
     local tfDefs = {
@@ -189,7 +192,7 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
 
     local scroll = CreateFrame("ScrollFrame", "ForeverMarketWatchLedgerScroll", tablePanel, "UIPanelScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", hdr, "BOTTOMLEFT", 0, -4)
-    scroll:SetPoint("BOTTOMRIGHT", tablePanel, "BOTTOMRIGHT", -26, 24)
+    scroll:SetPoint("BOTTOMRIGHT", tablePanel, "BOTTOMRIGHT", -26, 6)
 
     local child = CreateFrame("Frame", nil, scroll)
     child:SetWidth(720)
@@ -208,18 +211,12 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
     emptyTxt:SetTextColor(0.75, 0.68, 0.56, 1)
     emptyTxt:Hide()
 
-    local footer = tablePanel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    footer:SetPoint("BOTTOMLEFT", tablePanel, "BOTTOMLEFT", 10, 6)
-    footer:SetPoint("BOTTOMRIGHT", tablePanel, "BOTTOMRIGHT", -10, 6)
-    footer:SetJustifyH("LEFT")
-    footer:SetText("AH Buys log instantly on purchase; AH Sales & exact 5% fees log automatically when collected from your Mailbox.")
-
     local rows = {}
 
     local function GetOrCreateRow(idx)
         if rows[idx] then return rows[idx] end
         local r = CreateFrame("Button", nil, child)
-        r:SetHeight(37)
+        r:SetHeight(34)
 
         local bg = r:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
@@ -362,15 +359,11 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
         local sum = NS.DB:GetLedgerSummary(selectedDays, nil, charFilter)
         self._kpiValues.bought:SetText("|cFF42A8FA" .. NS.FormatMoney(sum.totalBought, true) .. "|r")
         self._kpiValues.sold:SetText("|cFF38D972" .. NS.FormatMoney(sum.totalSoldNet, true) .. "|r")
+        self._kpiValues.cashflow:SetText(NS.FormatSignedMoney(sum.netCashflow, true))
 
-        local cfClr = (sum.netCashflow >= 0) and "|cFF38D972+" or "|cFFF55954"
-        self._kpiValues.cashflow:SetText(cfClr .. NS.FormatMoney(sum.netCashflow, true) .. "|r")
-
-        local pClr = (sum.realizedProfit >= 0) and "|cFF38D972+" or "|cFFF55954"
-        local pRoi = sum.realizedRoiPct and string.format(" (%.1f%%)", sum.realizedRoiPct) or ""
-        self._kpiValues.profit:SetText(pClr .. NS.FormatMoney(sum.realizedProfit, true) .. pRoi .. "|r")
-
-        self._kpiValues.meta:SetText(string.format("%dB / %dS  |  Cut: %s", sum.buyCount, sum.sellCount, NS.FormatMoney(sum.totalFees, true)))
+        local pRoi = sum.realizedRoiPct and (" (" .. NS.FormatSignedPct(sum.realizedRoiPct, 1) .. ")") or ""
+        self._kpiValues.profit:SetText(NS.FormatSignedMoney(sum.realizedProfit, true) .. pRoi)
+        self._kpiValues.meta:SetText(string.format("%dB / %dS · %s", sum.buyCount, sum.sellCount, NS.FormatMoney(sum.totalFees, true)))
 
         -- 3. Fetch & render filtered transactions
         local entries = NS.DB:GetLedgerEntries({
@@ -382,11 +375,11 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
 
         emptyTxt:SetShown(#entries == 0)
         if #entries == 0 then
-            emptyTxt:SetText("No Auction House transactions recorded in this period yet.\n\nBuy items on the AH or collect AH sale gold from your Mailbox\nand every trade, fee, and profit/loss will appear here automatically!")
+            emptyTxt:SetText("No Auction House transactions in this period.")
         end
 
         local visible = math.min(#entries, 300)
-        local rowH = 38
+        local rowH = 35
         local w = scroll:GetWidth()
         if w and w > 100 then child:SetWidth(w) end
 
@@ -420,11 +413,11 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
             row.nameTxt:SetText(e.name or (e.itemID and ("Item #" .. tostring(e.itemID)) or "Unknown Item"))
 
             if isFee then
-                row.partyTxt:SetText(e.counterparty ~= "" and e.counterparty or "Lost Auction Deposit")
+                row.partyTxt:SetText(e.counterparty ~= "" and e.counterparty or "Lost Deposit")
             elseif e.counterparty and e.counterparty ~= "" then
-                row.partyTxt:SetText((isBuy and "From: " or "Buyer: ") .. e.counterparty)
+                row.partyTxt:SetText((isBuy and "From " or "To ") .. e.counterparty)
             else
-                row.partyTxt:SetText(isBuy and "Auction House Purchase" or "Auction House Sale")
+                row.partyTxt:SetText("")
             end
 
             row.qtyTxt:SetText("x" .. tostring(e.qty or 1))
@@ -432,29 +425,28 @@ function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
 
             if isBuy then
                 row.totalTxt:SetText("|cFF42A8FA-" .. NS.FormatMoney(e.netTotal or e.gross or 0, true) .. "|r")
-                row.feeTxt:SetText("Spent")
+                row.feeTxt:SetText("")
                 row.gainTxt:SetText("|cFF8A7E6B--|r")
                 row.roiTxt:SetText("")
             elseif isFee then
                 local dep = e.ahCut or e.netTotal or e.gross or 0
                 row.totalTxt:SetText("|cFFFFA030-" .. NS.FormatMoney(dep, true) .. "|r")
-                row.feeTxt:SetText("Lost Dep")
+                row.feeTxt:SetText("Deposit")
                 row.gainTxt:SetText("|cFFF55954-" .. NS.FormatMoney(dep, true) .. "|r")
-                row.roiTxt:SetText("|cFFFFA030Fee|r")
+                row.roiTxt:SetText("")
             else
                 row.totalTxt:SetText("|cFF38D972+" .. NS.FormatMoney(e.netTotal or 0, true) .. "|r")
-                row.feeTxt:SetText((e.ahCut and e.ahCut > 0) and ("Cut: " .. NS.FormatMoney(e.ahCut, true)) or "Net")
+                row.feeTxt:SetText((e.ahCut and e.ahCut > 0) and ("Cut " .. NS.FormatMoney(e.ahCut, true)) or "")
                 if e.profit ~= nil then
-                    local gClr = (e.profit >= 0) and "|cFF38D972+" or "|cFFF55954"
-                    row.gainTxt:SetText(gClr .. NS.FormatMoney(e.profit, true) .. "|r")
-                    local roiStr = e.roiPct and string.format("%s%+.1f%%|r", gClr, e.roiPct) or ""
+                    row.gainTxt:SetText(NS.FormatSignedMoney(e.profit, true))
+                    local roiStr = e.roiPct and NS.FormatSignedPct(e.roiPct, 1) or ""
                     if e.matched == "PARTIAL" then
                         roiStr = roiStr .. " |cFFFFCC33(part)|r"
                     end
                     row.roiTxt:SetText(roiStr)
                 else
                     row.gainTxt:SetText("|cFF998C78No Cost|r")
-                    row.roiTxt:SetText("Untracked")
+                    row.roiTxt:SetText("")
                 end
             end
 
