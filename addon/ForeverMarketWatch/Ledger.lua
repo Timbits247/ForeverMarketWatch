@@ -23,6 +23,11 @@ local auctionCacheCount = 0
 
 -- Mailbox invoice snapshot (rebuilt cleanly on MAIL_SHOW / MAIL_INBOX_UPDATE)
 local inboxSnapshot = {}
+-- Pending mailbox sale payouts awaiting actual PLAYER_MONEY gold-receipt confirmation.
+-- Prevents duplicate SELL logging when Blizzard "Open All" or rapid clicks retry a mail
+-- before MAIL_INBOX_UPDATE removes it from the client inbox.
+local pendingMailSales = {}
+local lastKnownMoney = 0
 
 local function IsTrackingEnabled()
     if NS.DB:IsDemoMode() then return false end
@@ -274,6 +279,91 @@ local function RefreshInboxSnapshot()
     end
 end
 
+local function PruneStalePendingSales(now)
+    for i = #pendingMailSales, 1, -1 do
+        local p = pendingMailSales[i]
+        if not p or (now - (p.ts or 0)) > 8 then
+            table.remove(pendingMailSales, i)
+        end
+    end
+end
+
+local function FindExactSubsetIndices(list, target)
+    local n = math.min(#list, 10)
+    if n < 2 or target <= 0 then return nil end
+
+    local found = nil
+    local function Search(idx, rem, chosen)
+        if rem == 0 then
+            found = {}
+            for i = 1, #chosen do found[i] = chosen[i] end
+            return true
+        end
+        if idx > n or rem < 0 then return false end
+        local val = list[idx].money or 0
+        if val > 0 and val <= rem then
+            chosen[#chosen + 1] = idx
+            if Search(idx + 1, rem - val, chosen) then return true end
+            chosen[#chosen] = nil
+        end
+        return Search(idx + 1, rem, chosen)
+    end
+
+    Search(1, target, {})
+    return found
+end
+
+local function CommitPendingMailSale(sale)
+    if not sale or not IsTrackingEnabled() then return end
+    local itemID = sale.itemID or NS.DB:ResolveItemIDByName(sale.itemName)
+    local ok, rec = NS.DB:RecordLedgerSale(itemID, sale.count, sale.gross, sale.ahCut, {
+        name         = sale.itemName,
+        counterparty = sale.playerName,
+        source       = "MAIL",
+    })
+    if ok and rec then
+        AnnounceSale(rec)
+    end
+end
+
+local function OnPlayerMoneyChanged()
+    local current = SafeGetMoney()
+    local delta = current - (lastKnownMoney or current)
+    lastKnownMoney = current
+
+    if pendingBid then
+        CheckPendingBidMoney()
+    end
+
+    if delta > 0 and #pendingMailSales > 0 then
+        local now = (time and time()) or 0
+        PruneStalePendingSales(now)
+        if #pendingMailSales == 0 then return end
+
+        -- 1. Exact single-mail match (handles normal & Open-All sequential pickups)
+        for i = 1, #pendingMailSales do
+            if pendingMailSales[i].money == delta then
+                local sale = table.remove(pendingMailSales, i)
+                CommitPendingMailSale(sale)
+                return
+            end
+        end
+
+        -- 2. Batched server tick: multiple sales credited in one PLAYER_MONEY event
+        local subset = FindExactSubsetIndices(pendingMailSales, delta)
+        if subset and #subset > 0 then
+            local toCommit = {}
+            for i = #subset, 1, -1 do
+                local sale = table.remove(pendingMailSales, subset[i])
+                table.insert(toCommit, 1, sale)
+            end
+            for i = 1, #toCommit do
+                CommitPendingMailSale(toCommit[i])
+            end
+        end
+    end
+end
+
 local function ProcessCollectedMail(mailIndex, mode)
     if not IsTrackingEnabled() then return end
     local snap = inboxSnapshot[mailIndex]
@@ -298,15 +388,31 @@ local function ProcessCollectedMail(mailIndex, mode)
         end
         if gross <= 0 then return end
 
-        local itemID = snap.itemID or NS.DB:ResolveItemIDByName(snap.itemName)
-        local ok, rec = NS.DB:RecordLedgerSale(itemID, snap.count, gross, ahCut, {
-            name         = snap.itemName,
-            counterparty = snap.playerName,
-            source       = "MAIL",
-        })
-        if ok and rec then
-            AnnounceSale(rec)
+        -- Queue for PLAYER_MONEY confirmation instead of committing immediately.
+        -- If Blizzard "Open All" retries this exact mail index before the server deletes it,
+        -- the duplicate signature is coalesced AND no second PLAYER_MONEY gain ever arrives.
+        local now = (time and time()) or 0
+        PruneStalePendingSales(now)
+        local sig = string.format("%d|%d|%s|%d|%s", mailIndex, snap.money, snap.itemName or "", snap.count or 1, snap.playerName or "")
+        for i = 1, #pendingMailSales do
+            if pendingMailSales[i].sig == sig then
+                pendingMailSales[i].ts = now
+                return
+            end
         end
+
+        table.insert(pendingMailSales, {
+            mailIndex  = mailIndex,
+            sig        = sig,
+            money      = snap.money,
+            gross      = gross,
+            ahCut      = ahCut,
+            itemID     = snap.itemID,
+            itemName   = snap.itemName,
+            count      = snap.count,
+            playerName = snap.playerName,
+            ts         = now,
+        })
 
     elseif snap.invoiceType == "buyer" and (mode == "ITEM" or mode == "AUTO") then
         if not snap.hasItem then return end
@@ -436,7 +542,9 @@ function Ledger:Init()
     end
 
     -- 3. Event listener
+    lastKnownMoney = SafeGetMoney()
     eventFrame = CreateFrame("Frame")
+    eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
     eventFrame:RegisterEvent("COMMODITY_PRICE_UPDATED")
     eventFrame:RegisterEvent("COMMODITY_PURCHASE_SUCCEEDED")
     eventFrame:RegisterEvent("COMMODITY_PURCHASE_FAILED")
@@ -448,7 +556,9 @@ function Ledger:Init()
     eventFrame:RegisterEvent("AUCTION_HOUSE_CLOSED")
 
     eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2)
-        if event == "COMMODITY_PRICE_UPDATED" then
+        if event == "PLAYER_ENTERING_WORLD" then
+            lastKnownMoney = SafeGetMoney()
+        elseif event == "COMMODITY_PRICE_UPDATED" then
             if pendingCommodity then
                 local up = tonumber(arg1)
                 local tp = tonumber(arg2)
@@ -464,10 +574,12 @@ function Ledger:Init()
                 CacheItemSearchResults(arg1)
             end
         elseif event == "PLAYER_MONEY" then
-            if pendingBid then
-                CheckPendingBidMoney()
-            end
-        elseif event == "MAIL_SHOW" or event == "MAIL_INBOX_UPDATE" then
+            OnPlayerMoneyChanged()
+        elseif event == "MAIL_SHOW" then
+            lastKnownMoney = SafeGetMoney()
+            pendingMailSales = {}
+            RefreshInboxSnapshot()
+        elseif event == "MAIL_INBOX_UPDATE" then
             RefreshInboxSnapshot()
         elseif event == "MAIL_CLOSED" then
             inboxSnapshot = {}

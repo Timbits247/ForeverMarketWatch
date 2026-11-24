@@ -74,9 +74,10 @@ function DB:Init()
         ForeverMarketWatchDB.markets = {}
     end
 
-    -- One-time v4 accounting repair: purges duplicate commodity MAIL BUY entries
-    -- from earlier beta builds and replays all real trades to rebuild exact cost bases & per-char splits.
-    if prevSchema > 0 and prevSchema < 4 then
+    -- One-time v5 accounting repair: purges duplicate commodity MAIL BUY entries
+    -- and duplicate Open-All MAIL SELL entries from earlier builds, then replays
+    -- all real trades chronologically to rebuild exact cost bases, profits & per-char splits.
+    if prevSchema > 0 and prevSchema < 5 then
         local totalPurged = 0
         for _, m in pairs(ForeverMarketWatchDB.markets) do
             if type(m) == "table" and type(m.ledger) == "table" and #m.ledger > 0 then
@@ -85,7 +86,7 @@ function DB:Init()
             end
         end
         if totalPurged > 0 then
-            NS.Print(string.format("Accounting auto-repair: removed %d duplicate commodity mail buy rows & recalculated exact cost bases and profits.", totalPurged))
+            NS.Print(string.format("Accounting auto-repair: removed %d duplicate mail rows & recalculated exact cost bases and profits.", totalPurged))
         end
     end
 
@@ -1441,17 +1442,26 @@ end
 
 -- Replays Ledger transactions chronologically to rebuild exact Inventory qty,
 -- weighted average cost basis, per-character byChar splits, and SELL row P&L.
--- When purgeDuplicateMailBuys is true, removes corrupted commodity BUY entries
--- with source == "MAIL" (from earlier multi-stack mail attachment splitting).
-function DB:RebuildAccountingFromLedger(purgeDuplicateMailBuys, marketOverride, silent)
+-- When purgeDuplicates is true, removes:
+--   1. Corrupted commodity BUY entries with source == "MAIL" (multi-stack mail splitting)
+--   2. Corrupted legacy 0c SELL entries (buyout=1 flag bug from early builds)
+--   3. Duplicate rapid-fire MAIL SELL entries logged within 3s by Blizzard "Open All" retries
+function DB:RebuildAccountingFromLedger(purgeDuplicates, marketOverride, silent)
     if demoModeActive and not marketOverride then
-        return { purged = 0, replayed = 0 }
+        return { purged = 0, purgedBuys = 0, purgedSells = 0, replayed = 0 }
     end
     local market = marketOverride or self:GetActiveMarket()
     if type(market.ledger) ~= "table" then market.ledger = {} end
     if type(market.investments) ~= "table" then market.investments = {} end
 
-    -- 1. Identify which itemIDs have live AH buys or are stackable commodities
+    -- 1. Sort ledger chronologically (ts asc, id asc) before deduplication & replay
+    table.sort(market.ledger, function(a, b)
+        local at, bt = a.ts or 0, b.ts or 0
+        if at ~= bt then return at < bt end
+        return (a.id or 0) < (b.id or 0)
+    end)
+
+    -- 2. Identify which itemIDs have live AH buys or are stackable commodities
     local hasAHBuy = {}
     for i = 1, #market.ledger do
         local e = market.ledger[i]
@@ -1461,19 +1471,50 @@ function DB:RebuildAccountingFromLedger(purgeDuplicateMailBuys, marketOverride, 
     end
 
     local purged = 0
-    if purgeDuplicateMailBuys then
+    local purgedBuys = 0
+    local purgedSells = 0
+    if purgeDuplicates then
         local cleaned = {}
+        local lastKeptSellByKey = {}
         for i = 1, #market.ledger do
             local e = market.ledger[i]
-            local isDupMailCommodityBuy = false
+            local dropReason = nil
+
             if e.type == "BUY" and e.source == "MAIL" and e.itemID then
                 local maxStack = (C_Item and C_Item.GetItemMaxStackSizeByID and C_Item.GetItemMaxStackSizeByID(e.itemID)) or 1
                 if hasAHBuy[e.itemID] or maxStack > 1 then
-                    isDupMailCommodityBuy = true
+                    dropReason = "BUY"
+                end
+            elseif e.type == "SELL" and e.source == "MAIL" then
+                local netAmt = tonumber(e.netTotal) or 0
+                local grossAmt = tonumber(e.gross) or 0
+                if netAmt <= 0 and grossAmt <= 25 then
+                    -- Legacy corrupted 0c sale from buyout=1 flag bug
+                    dropReason = "SELL"
+                else
+                    local chKey = tostring(e.character or ""):lower()
+                    local itemKey = (e.itemID and tostring(e.itemID)) or ("NAME:" .. tostring(e.name or ""):lower())
+                    local sellKey = chKey .. "|" .. itemKey
+                    local prev = lastKeptSellByKey[sellKey]
+                    if prev
+                        and math.abs((e.ts or 0) - (prev.ts or 0)) <= 3
+                        and (tonumber(e.qty) or 0) == (tonumber(prev.qty) or 0)
+                        and netAmt == (tonumber(prev.netTotal) or 0)
+                        and tostring(e.counterparty or "") == tostring(prev.counterparty or "")
+                    then
+                        dropReason = "SELL"
+                    else
+                        lastKeptSellByKey[sellKey] = e
+                    end
                 end
             end
-            if isDupMailCommodityBuy then
+
+            if dropReason == "BUY" then
                 purged = purged + 1
+                purgedBuys = purgedBuys + 1
+            elseif dropReason == "SELL" then
+                purged = purged + 1
+                purgedSells = purgedSells + 1
             else
                 table.insert(cleaned, e)
             end
@@ -1481,13 +1522,6 @@ function DB:RebuildAccountingFromLedger(purgeDuplicateMailBuys, marketOverride, 
         market.ledger = cleaned
         market.pendingMailMatches = {}
     end
-
-    -- 2. Sort ledger chronologically (ts asc, id asc)
-    table.sort(market.ledger, function(a, b)
-        local at, bt = a.ts or 0, b.ts or 0
-        if at ~= bt then return at < bt end
-        return (a.id or 0) < (b.id or 0)
-    end)
 
     -- 3. Preserve any pre-Ledger manual investments (items with NO AH/MAIL buys in ledger)
     local hasAutoActivity = {}
@@ -1648,7 +1682,7 @@ function DB:RebuildAccountingFromLedger(purgeDuplicateMailBuys, marketOverride, 
     if not silent then
         NS:FireCallback("DATA_UPDATED", nil, "LEDGER_REBUILT")
     end
-    return { purged = purged, replayed = replayed }
+    return { purged = purged, purgedBuys = purgedBuys, purgedSells = purgedSells, replayed = replayed }
 end
 
 function DB:DeleteLedgerEntry(entryId, skipInventorySync)

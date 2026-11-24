@@ -431,20 +431,24 @@ function NS.RunSelfTests()
     if rs2 and rs2.id then NS.DB:DeleteLedgerEntry(rs2.id, true) end
     NS.DB:ClearInvestment(testRollID)
 
-    -- 16. Accounting Auto-Repair (Purge Commodity Mail Dups) & Character / Group Filtering
+    -- 16. Accounting Auto-Repair (Purge Commodity Mail Dups + Open-All Duplicate Sells + 0c Legacy) & Char Filter
     local mockRepairMkt = {
         investments = {},
         history = {},
         charGroups = {},
         ledger = {
-            { id = 1, ts = baseNow - 500, type = "BUY",  itemID = 2318, name = "Light Leather", qty = 100, unitPrice = 75,  gross = 7500,  ahCut = 0,   netTotal = 7500,  character = "Investor", source = "AH" },
-            { id = 2, ts = baseNow - 400, type = "BUY",  itemID = 2318, name = "Light Leather", qty = 20,  unitPrice = 375, gross = 7500,  ahCut = 0,   netTotal = 7500,  character = "Investor", source = "MAIL" }, -- phantom dup!
-            { id = 3, ts = baseNow - 200, type = "SELL", itemID = 2318, name = "Light Leather", qty = 50,  unitPrice = 100, gross = 5000,  ahCut = 250, netTotal = 4750,  character = "Investor", source = "MAIL" },
+            { id = 1, ts = baseNow - 500, type = "BUY",  itemID = 2318, name = "Light Leather",     qty = 100, unitPrice = 75,  gross = 7500,  ahCut = 0,   netTotal = 7500,  character = "Investor", source = "AH" },
+            { id = 2, ts = baseNow - 400, type = "BUY",  itemID = 2318, name = "Light Leather",     qty = 20,  unitPrice = 375, gross = 7500,  ahCut = 0,   netTotal = 7500,  character = "Investor", source = "MAIL" }, -- phantom dup BUY!
+            { id = 3, ts = baseNow - 300, type = "SELL", itemID = 3240, name = "Heavy Weightstone", qty = 17,  unitPrice = 1,   gross = 17,    ahCut = 17,  netTotal = 0,     character = "Timbits",  source = "MAIL" }, -- legacy 0c bug row!
+            { id = 4, ts = baseNow - 200, type = "SELL", itemID = 2318, name = "Light Leather",     qty = 50,  unitPrice = 100, gross = 5000,  ahCut = 250, netTotal = 4750,  character = "Investor", source = "MAIL", counterparty = "" },
+            { id = 5, ts = baseNow - 199, type = "SELL", itemID = 2318, name = "Light Leather",     qty = 50,  unitPrice = 100, gross = 5000,  ahCut = 250, netTotal = 4750,  character = "Investor", source = "MAIL", counterparty = "" }, -- duplicate Open-All SELL!
         },
         pendingMailMatches = {},
     }
     local repStats = NS.DB:RebuildAccountingFromLedger(true, mockRepairMkt, true)
-    AssertEq("Repair purged 1 phantom commodity MAIL buy", repStats.purged, 1)
+    AssertEq("Repair purged 3 bad rows (1 buy + 2 sells)", repStats.purged, 3)
+    AssertEq("Repair purged 1 phantom commodity MAIL buy", repStats.purgedBuys, 1)
+    AssertEq("Repair purged 2 duplicate/0c MAIL sells", repStats.purgedSells, 2)
     AssertEq("Repair rebuilt exact qty (100 - 50 = 50)", mockRepairMkt.investments[2318] and mockRepairMkt.investments[2318].qty, 50)
     AssertEq("Repair rebuilt exact avgCost (75c)", mockRepairMkt.investments[2318] and mockRepairMkt.investments[2318].avgCost, 75)
     AssertEq("Repair rebuilt exact SELL profit (4750 - 3750 = +1000c)", mockRepairMkt.ledger[2] and mockRepairMkt.ledger[2].profit, 1000)
