@@ -1,14 +1,430 @@
 -- ProfitsUI.lua
--- Per-Item Profit & Loss Summary Tab (Classic WoW AH themed):
---   * Rolls up dozens of individual Ledger BUY/SELL rows into ONE clean row per item
---     so you can immediately tell which items are making or losing you gold overall.
---   * Shows Total Bought (qty + avg), Total Net Sold (qty + avg), Remaining On Hand
---     (qty + live est. net value), Realized P&L, and Total P&L (Incl. Open Stock).
+-- Per-Item Profit & Loss Summary Tab + TSM-Style Gold Balance Chart (Classic WoW AH themed):
+--   * Top KPI banner featuring filtered Total Gold, Realized P&L, Total P&L (Incl. Stock),
+--     Winners / Losers, and Top Money-Maker.
+--   * Interactive collapsible TSM-style Gold Balance line chart filtered by Character / Group
+--     and timeframe (Today / 7D / 30D / All) with hover crosshair & multi-alt breakdown.
+--   * Rolls up individual Ledger BUY/SELL rows into ONE clean row per item.
 
 local _, NS = ...
 
 local ProfitsUI = {}
 NS.ProfitsUI = ProfitsUI
+
+--------------------------------------------------------------------------------
+-- Lightweight TSM-Style Gold Balance Chart Widget (Zero GameTooltip Hooks)
+--------------------------------------------------------------------------------
+
+local GOLD_PAD_LEFT   = 88
+local GOLD_PAD_RIGHT  = 14
+local GOLD_PAD_TOP    = 26
+local GOLD_PAD_BOTTOM = 20
+
+local function AcquireObj(pool, creator)
+    pool.used = pool.used + 1
+    local obj = pool.items[pool.used]
+    if not obj then
+        obj = creator()
+        pool.items[pool.used] = obj
+    end
+    obj:Show()
+    return obj
+end
+
+local function ResetObjPool(pool)
+    for i = 1, #pool.items do
+        pool.items[i]:Hide()
+    end
+    pool.used = 0
+end
+
+local function DrawGoldSegment(line, parent, x1, y1, x2, y2, thickness, r, g, b, a)
+    if line.SetStartPoint then
+        line:SetThickness(thickness or 2.2)
+        line:SetColorTexture(r, g, b, a or 1)
+        -- WoW Line API takes 4 args: (relativePoint, relativeTo, offsetX, offsetY)
+        line:SetStartPoint("BOTTOMLEFT", parent, x1, y1)
+        line:SetEndPoint("BOTTOMLEFT", parent, x2, y2)
+    else
+        line:SetColorTexture(r, g, b, a or 1)
+        line:ClearAllPoints()
+        line:SetPoint("BOTTOMLEFT", parent, "BOTTOMLEFT", math.min(x1, x2), math.min(y1, y2))
+        line:SetSize(math.max(thickness or 2, math.abs(x2 - x1)), math.max(thickness or 2, math.abs(y2 - y1)))
+    end
+end
+
+local function FormatGoldAxisDate(ts, days)
+    if not ts then return "" end
+    if days == 1 then
+        return date("%H:%M", ts)
+    elseif days == 7 then
+        return date("%b %d %H:%M", ts)
+    end
+    return date("%b %d", ts)
+end
+
+local function CreateGoldChartWidget(parent)
+    local panel = NS.CreatePanel(parent, nil, NS.COLORS.BG_DARK, NS.COLORS.BORDER_ACCENT, false)
+    panel:EnableMouse(true)
+    panel:SetClipsChildren(true)
+
+    local coinIcon = panel:CreateTexture(nil, "ARTWORK")
+    coinIcon:SetSize(14, 14)
+    coinIcon:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, -6)
+    coinIcon:SetTexture(133784)
+    coinIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+    local hudLeft = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    hudLeft:SetPoint("LEFT", coinIcon, "RIGHT", 5, 0)
+    hudLeft:SetJustifyH("LEFT")
+    hudLeft:SetWordWrap(false)
+
+    local hudRight = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    hudRight:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -10, -7)
+    hudRight:SetJustifyH("RIGHT")
+    hudRight:SetWordWrap(false)
+
+    hudLeft:SetPoint("RIGHT", hudRight, "LEFT", -8, 0)
+
+    local emptyTxt = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    emptyTxt:SetPoint("CENTER", panel, "CENTER", 0, -6)
+    emptyTxt:SetJustifyH("CENTER")
+    emptyTxt:SetTextColor(0.76, 0.70, 0.58, 1)
+    emptyTxt:Hide()
+
+    local hintTxt = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    hintTxt:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -12, 24)
+    hintTxt:SetJustifyH("RIGHT")
+    hintTxt:Hide()
+
+    local crossV = panel:CreateTexture(nil, "OVERLAY", nil, 5)
+    crossV:SetColorTexture(NS.COLORS.CROSSHAIR[1], NS.COLORS.CROSSHAIR[2], NS.COLORS.CROSSHAIR[3], 0.55)
+    crossV:Hide()
+
+    local hoverDot = panel:CreateTexture(nil, "OVERLAY", nil, 6)
+    hoverDot:SetSize(8, 8)
+    hoverDot:SetColorTexture(1.0, 0.92, 0.45, 1)
+    hoverDot:Hide()
+
+    local endDot = panel:CreateTexture(nil, "OVERLAY", nil, 4)
+    endDot:SetSize(7, 7)
+    endDot:SetColorTexture(1.0, 0.84, 0.08, 1)
+    endDot:Hide()
+
+    local pools = {
+        grid   = { items = {}, used = 0 },
+        fill   = { items = {}, used = 0 },
+        lines  = { items = {}, used = 0 },
+        labels = { items = {}, used = 0 },
+    }
+
+    local plotted = {}
+    local lastData = nil
+    local lastScopeLabel = "All Characters"
+    local lastDays = nil
+    local defaultRightText = ""
+
+    local function UpdateHover(self)
+        if not lastData or #plotted == 0 then
+            crossV:Hide()
+            hoverDot:Hide()
+            return
+        end
+        local cx, cy = GetCursorPosition()
+        local scale = self:GetEffectiveScale() or 1
+        cx = cx / scale
+        cy = cy / scale
+        local left = self:GetLeft()
+        local bottom = self:GetBottom()
+        local w = self:GetWidth() or 0
+        local h = self:GetHeight() or 0
+        if not left or not bottom then return end
+
+        local rx = cx - left
+        local ry = cy - bottom
+        if rx < GOLD_PAD_LEFT or rx > (w - GOLD_PAD_RIGHT) or ry < GOLD_PAD_BOTTOM or ry > (h - GOLD_PAD_TOP) then
+            crossV:Hide()
+            hoverDot:Hide()
+            hudRight:SetText(defaultRightText)
+            return
+        end
+
+        local best = nil
+        local bestDist = math.huge
+        for i = 1, #plotted do
+            local d = math.abs(plotted[i].x - rx)
+            if d < bestDist then
+                bestDist = d
+                best = plotted[i]
+            end
+        end
+
+        if best then
+            crossV:ClearAllPoints()
+            crossV:SetPoint("BOTTOMLEFT", self, "BOTTOMLEFT", best.x, GOLD_PAD_BOTTOM)
+            crossV:SetSize(1, math.max(1, h - GOLD_PAD_TOP - GOLD_PAD_BOTTOM))
+            crossV:Show()
+
+            hoverDot:ClearAllPoints()
+            hoverDot:SetPoint("CENTER", self, "BOTTOMLEFT", best.x, best.y)
+            hoverDot:Show()
+
+            local diff = best.copper - (lastData.startTotal or best.copper)
+            local dClr = (diff >= 0) and "|cFF38D972+" or "|cFFF55954"
+            local tStr = date and date("%b %d %H:%M", best.ts) or ""
+            hudRight:SetText(string.format(
+                "|cFFC4B79E%s|r   |cFFFFD100%s|r  (%s%s|r)",
+                tStr,
+                NS.FormatMoney(best.copper, true),
+                dClr,
+                NS.FormatMoney(diff, true)
+            ))
+        end
+    end
+
+    panel:SetScript("OnUpdate", function(self)
+        if self:IsMouseOver() then
+            UpdateHover(self)
+        elseif crossV:IsShown() then
+            crossV:Hide()
+            hoverDot:Hide()
+            hudRight:SetText(defaultRightText)
+        end
+    end)
+
+    panel:SetScript("OnLeave", function()
+        crossV:Hide()
+        hoverDot:Hide()
+        hudRight:SetText(defaultRightText)
+    end)
+
+    function panel:Render(goldData, scopeLabel, days)
+        lastData = goldData
+        lastScopeLabel = scopeLabel or "All Characters"
+        lastDays = days
+
+        ResetObjPool(pools.grid)
+        ResetObjPool(pools.fill)
+        ResetObjPool(pools.lines)
+        ResetObjPool(pools.labels)
+        plotted = {}
+        crossV:Hide()
+        hoverDot:Hide()
+        endDot:Hide()
+        hintTxt:Hide()
+
+        -- Build Header HUD
+        local cur = (goldData and goldData.currentTotal) or 0
+        local delta = (goldData and goldData.periodDelta) or 0
+        local dClr = (delta >= 0) and "|cFF38D972+" or "|cFFF55954"
+        local pctStr = ""
+        if goldData and goldData.periodPct then
+            pctStr = string.format(" %+.1f%%", goldData.periodPct)
+        end
+        local tfTag = (days == 1 and "Today") or (days and (tostring(days) .. "D")) or "All"
+
+        hudLeft:SetText(string.format(
+            "|cFFFFD100Gold (%s — %s):|r  |cFFFFFFFF%s|r   %s%s%s|r",
+            lastScopeLabel,
+            tfTag,
+            NS.FormatMoney(cur, true),
+            dClr,
+            NS.FormatMoney(delta, true),
+            pctStr
+        ))
+
+        -- Right HUD defaults to compact character breakdown (when >1 char) or tracked alt count
+        defaultRightText = ""
+        if goldData and goldData.chars and #goldData.chars > 1 then
+            local parts = {}
+            local limit = math.min(#goldData.chars, 3)
+            for i = 1, limit do
+                local c = goldData.chars[i]
+                table.insert(parts, string.format("%s: |cFFFFD100%s|r", c.name, NS.FormatMoney(c.copper, true)))
+            end
+            if #goldData.chars > limit then
+                table.insert(parts, string.format("+%d more", #goldData.chars - limit))
+            end
+            defaultRightText = "|cFFA89C86" .. table.concat(parts, "  |  ") .. "|r"
+        elseif goldData and goldData.charCount == 1 then
+            defaultRightText = "|cFFA89C86Hover graph for timestamps|r"
+        end
+        hudRight:SetText(defaultRightText)
+
+        local w = self:GetWidth() or 0
+        local h = self:GetHeight() or 0
+        local plotW = w - GOLD_PAD_LEFT - GOLD_PAD_RIGHT
+        local plotH = h - GOLD_PAD_TOP - GOLD_PAD_BOTTOM
+        if plotW < 60 or plotH < 30 then return end
+
+        local pts = (goldData and goldData.points) or {}
+        if #pts == 0 or (goldData and goldData.charCount == 0) then
+            emptyTxt:SetText("No gold snapshot recorded for " .. lastScopeLabel .. " yet.\nLog onto this character to start tracking its gold curve automatically.")
+            emptyTxt:Show()
+            return
+        end
+        emptyTxt:Hide()
+
+        -- Normalize plot series (if only 1 point, draw clean horizontal baseline across canvas)
+        local drawPts = {}
+        if #pts == 1 then
+            drawPts[1] = { ts = pts[1].ts, copper = pts[1].copper, frac = 0 }
+            drawPts[2] = { ts = pts[1].ts, copper = pts[1].copper, frac = 1 }
+            hintTxt:SetText("Live gold snapshot active — curve builds automatically as your gold changes or you log alts")
+            hintTxt:Show()
+        else
+            local minTs = pts[1].ts
+            local maxTs = pts[#pts].ts
+            local spanTs = math.max(1, maxTs - minTs)
+            for i = 1, #pts do
+                drawPts[i] = {
+                    ts     = pts[i].ts,
+                    copper = pts[i].copper,
+                    frac   = (pts[i].ts - minTs) / spanTs,
+                }
+            end
+        end
+
+        -- Compute Y-axis range with comfortable padding
+        local minV = goldData.minCopper or 0
+        local maxV = goldData.maxCopper or 0
+        if maxV == minV then
+            local pad = math.max(1000, math.floor(maxV * 0.12))
+            minV = math.max(0, minV - pad)
+            maxV = maxV + pad
+        else
+            local pad = math.max(100, math.floor((maxV - minV) * 0.14))
+            minV = math.max(0, minV - pad)
+            maxV = maxV + pad
+        end
+        local spanV = math.max(1, maxV - minV)
+
+        -- Horizontal grid lines + full Gold/Silver/Copper Y-axis labels (3 levels)
+        local yTicks = 2
+        for t = 0, yTicks do
+            local frac = t / yTicks
+            local y = GOLD_PAD_BOTTOM + (frac * plotH)
+            local val = math.floor(minV + (frac * spanV) + 0.5)
+
+            local gLine = AcquireObj(pools.grid, function()
+                return self:CreateTexture(nil, "BACKGROUND", nil, 2)
+            end)
+            gLine:SetColorTexture(NS.COLORS.GRID[1], NS.COLORS.GRID[2], NS.COLORS.GRID[3], 0.42)
+            gLine:ClearAllPoints()
+            gLine:SetPoint("BOTTOMLEFT", self, "BOTTOMLEFT", GOLD_PAD_LEFT, y)
+            gLine:SetSize(plotW, 1)
+
+            local yLbl = AcquireObj(pools.labels, function()
+                return self:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+            end)
+            yLbl:ClearAllPoints()
+            yLbl:SetPoint("RIGHT", self, "BOTTOMLEFT", GOLD_PAD_LEFT - 6, y)
+            yLbl:SetWidth(GOLD_PAD_LEFT - 10)
+            yLbl:SetJustifyH("RIGHT")
+            yLbl:SetTextColor(0.84, 0.78, 0.66, 1)
+            yLbl:SetText(NS.FormatMoney(val, true))
+        end
+
+        -- Subtle starting-balance reference line
+        if #pts >= 2 and goldData.startTotal then
+            local baseFrac = math.max(0, math.min(1, (goldData.startTotal - minV) / spanV))
+            local baseY = GOLD_PAD_BOTTOM + (baseFrac * plotH)
+            local bLine = AcquireObj(pools.grid, function()
+                return self:CreateTexture(nil, "BACKGROUND", nil, 3)
+            end)
+            bLine:SetColorTexture(0.95, 0.80, 0.30, 0.25)
+            bLine:ClearAllPoints()
+            bLine:SetPoint("BOTTOMLEFT", self, "BOTTOMLEFT", GOLD_PAD_LEFT, baseY)
+            bLine:SetSize(plotW, 1)
+        end
+
+        -- Map points to screen coordinates
+        for i = 1, #drawPts do
+            local dp = drawPts[i]
+            local x = GOLD_PAD_LEFT + (dp.frac * plotW)
+            local y = GOLD_PAD_BOTTOM + (((dp.copper - minV) / spanV) * plotH)
+            plotted[i] = { x = x, y = y, ts = dp.ts, copper = dp.copper }
+        end
+
+        -- Downsample translucent area-fill strips if very dense so frame count stays tiny
+        local maxStrips = 80
+        local step = math.max(1, math.floor((#plotted - 1) / maxStrips))
+        local idx = 1
+        while idx < #plotted do
+            local nextIdx = math.min(#plotted, idx + step)
+            local p1 = plotted[idx]
+            local p2 = plotted[nextIdx]
+            local stripW = math.max(1, p2.x - p1.x)
+            local midY = (p1.y + p2.y) * 0.5
+            local stripH = math.max(1, midY - GOLD_PAD_BOTTOM)
+
+            local fill = AcquireObj(pools.fill, function()
+                return self:CreateTexture(nil, "BACKGROUND", nil, 4)
+            end)
+            fill:SetColorTexture(1.0, 0.82, 0.14, 0.14)
+            fill:ClearAllPoints()
+            fill:SetPoint("BOTTOMLEFT", self, "BOTTOMLEFT", p1.x, GOLD_PAD_BOTTOM)
+            fill:SetSize(stripW + 0.5, stripH)
+
+            idx = nextIdx
+        end
+
+        -- Crisp Classic WoW Gold line segments
+        for i = 1, #plotted - 1 do
+            local p1 = plotted[i]
+            local p2 = plotted[i + 1]
+            local seg = AcquireObj(pools.lines, function()
+                if self.CreateLine then
+                    return self:CreateLine(nil, "ARTWORK", nil, 3)
+                end
+                return self:CreateTexture(nil, "ARTWORK")
+            end)
+            DrawGoldSegment(seg, self, p1.x, p1.y, p2.x, p2.y, 2.2, 1.0, 0.83, 0.12, 1.0)
+        end
+
+        -- Glowing live endpoint dot
+        local lastPt = plotted[#plotted]
+        if lastPt then
+            endDot:ClearAllPoints()
+            endDot:SetPoint("CENTER", self, "BOTTOMLEFT", lastPt.x, lastPt.y)
+            endDot:Show()
+        end
+
+        -- Bottom X-axis date ticks (Start, Mid, Now)
+        local xTickCount = (#pts >= 2) and 3 or 1
+        for i = 1, xTickCount do
+            local frac = (xTickCount == 1) and 1 or ((i - 1) / (xTickCount - 1))
+            local pIdx = math.max(1, math.min(#plotted, math.floor(1 + frac * (#plotted - 1) + 0.5)))
+            local pt = plotted[pIdx]
+            local xLbl = AcquireObj(pools.labels, function()
+                return self:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+            end)
+            xLbl:ClearAllPoints()
+            xLbl:SetTextColor(0.70, 0.65, 0.55, 1)
+            if i == 1 and xTickCount > 1 then
+                xLbl:SetPoint("BOTTOMLEFT", self, "BOTTOMLEFT", GOLD_PAD_LEFT, 4)
+                xLbl:SetJustifyH("LEFT")
+                xLbl:SetText(FormatGoldAxisDate(pt.ts, days))
+            elseif i == xTickCount then
+                xLbl:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -GOLD_PAD_RIGHT, 4)
+                xLbl:SetJustifyH("RIGHT")
+                xLbl:SetText((#pts >= 2) and "Now" or FormatGoldAxisDate(pt.ts, days))
+            else
+                xLbl:SetPoint("BOTTOM", self, "BOTTOMLEFT", GOLD_PAD_LEFT + (plotW * frac), 4)
+                xLbl:SetJustifyH("CENTER")
+                xLbl:SetText(FormatGoldAxisDate(pt.ts, days))
+            end
+        end
+    end
+
+    panel:SetScript("OnSizeChanged", function(self)
+        if lastData and self:IsShown() then
+            self:Render(lastData, lastScopeLabel, lastDays)
+        end
+    end)
+
+    return panel
+end
 
 function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
     local frame = CreateFrame("Frame", nil, parent)
@@ -20,9 +436,10 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
     local sortCol = "totalPnL"      -- "name", "bought", "sold", "onHand", "realized", "totalPnL"
     local sortAsc = false
     local searchText = ""
+    local showGoldChart = true
 
     ----------------------------------------------------------------------------
-    -- 1. TOP PER-ITEM PERFORMANCE KPI BANNER
+    -- 1. TOP PER-ITEM PERFORMANCE + TOTAL GOLD KPI BANNER
     ----------------------------------------------------------------------------
     local kpiBar = NS.CreatePanel(frame, nil, NS.COLORS.BG_CARD, NS.COLORS.BORDER_ACCENT, false)
     kpiBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
@@ -30,11 +447,11 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
     kpiBar:SetHeight(56)
 
     local kpis = {
-        { id = "winloss",  title = "Winners / Losers" },
-        { id = "best",     title = "Top Money-Maker" },
-        { id = "worst",    title = "Biggest Loser" },
+        { id = "gold",     title = "Total Gold" },
         { id = "realized", title = "Realized P&L" },
         { id = "total",    title = "Total P&L (Incl. Stock)" },
+        { id = "winloss",  title = "Winners / Losers" },
+        { id = "best",     title = "Top Money-Maker" },
     }
     local kpiCols = {}
     frame._kpiValues = {}
@@ -118,8 +535,8 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
         prev = b
     end
 
-    local searchBox, searchEB = NS.CreateEditBox(ctrlBar, 128, 22, "Filter item...")
-    searchBox:SetPoint("LEFT", prev, "RIGHT", 10, 0)
+    local searchBox, searchEB = NS.CreateEditBox(ctrlBar, 118, 22, "Filter item...")
+    searchBox:SetPoint("LEFT", prev, "RIGHT", 8, 0)
     searchEB:SetScript("OnTextChanged", function(self)
         searchText = (self:GetText() or ""):lower():match("^%s*(.-)%s*$")
         frame:Refresh()
@@ -132,19 +549,50 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
         if onOpenCharGroups then onOpenCharGroups(self) end
     end)
 
-    local charDrop = NS.CreateDropdown(ctrlBar, 128, 22, function(val)
+    local charDrop = NS.CreateDropdown(ctrlBar, 124, 22, function(val)
         if NS.UI and NS.UI.SetCharFilter then
             NS.UI.SetCharFilter(val)
         end
     end)
     charDrop:SetPoint("RIGHT", altsBtn, "LEFT", -4, 0)
 
+    local chartToggleBtn = NS.CreateButton(ctrlBar, "Chart", 48, 22, false)
+    chartToggleBtn:SetPoint("RIGHT", charDrop, "LEFT", -4, 0)
+
     ----------------------------------------------------------------------------
-    -- 3. PER-ITEM PROFIT ROLLUP TABLE
+    -- 3. TSM-STYLE GOLD BALANCE CHART PANEL (COLLAPSIBLE)
+    ----------------------------------------------------------------------------
+    local goldChart = CreateGoldChartWidget(frame)
+    goldChart:SetPoint("TOPLEFT", ctrlBar, "BOTTOMLEFT", 0, -6)
+    goldChart:SetPoint("TOPRIGHT", ctrlBar, "BOTTOMRIGHT", 0, -6)
+    goldChart:SetHeight(134)
+
+    ----------------------------------------------------------------------------
+    -- 4. PER-ITEM PROFIT ROLLUP TABLE
     ----------------------------------------------------------------------------
     local tablePanel = NS.CreatePanel(frame, nil, NS.COLORS.BG_PANEL, NS.COLORS.BORDER, false)
-    tablePanel:SetPoint("TOPLEFT", ctrlBar, "BOTTOMLEFT", 0, -6)
+    tablePanel:SetPoint("TOPLEFT", goldChart, "BOTTOMLEFT", 0, -6)
     tablePanel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
+
+    local function UpdateChartLayout()
+        chartToggleBtn:SetActiveState(showGoldChart)
+        tablePanel:ClearAllPoints()
+        if showGoldChart then
+            goldChart:Show()
+            tablePanel:SetPoint("TOPLEFT", goldChart, "BOTTOMLEFT", 0, -6)
+        else
+            goldChart:Hide()
+            tablePanel:SetPoint("TOPLEFT", ctrlBar, "BOTTOMLEFT", 0, -6)
+        end
+        tablePanel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
+    end
+
+    chartToggleBtn:SetScript("OnClick", function()
+        showGoldChart = not showGoldChart
+        UpdateChartLayout()
+        frame:Refresh()
+    end)
+    UpdateChartLayout()
 
     local hdr = NS.CreatePanel(tablePanel, nil, NS.COLORS.BG_HEADER, NS.COLORS.BORDER, true)
     hdr:SetPoint("TOPLEFT", tablePanel, "TOPLEFT", 6, -6)
@@ -345,10 +793,28 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
             end
         end
 
-        -- 2. Compute per-item rollups (filtered by active character or character group)
+        -- 2. Sync live player gold snapshot & compute filtered gold + per-item rollups
+        if GetMoney and not NS.DB:IsDemoMode() then
+            NS.DB:RecordCharacterGold(GetMoney(), nil, nil, true)
+        end
+
         local charFilter = (NS.UI and NS.UI.GetCharFilter and NS.UI.GetCharFilter()) or "ALL"
-        charDrop:SetOptions(NS.DB:GetCharacterFilterOptions())
+        local filterOpts = NS.DB:GetCharacterFilterOptions()
+        charDrop:SetOptions(filterOpts)
         charDrop:SetSelected(charFilter, false)
+
+        local scopeLabel = "All Characters"
+        for i = 1, #filterOpts do
+            if filterOpts[i].value == charFilter then
+                scopeLabel = filterOpts[i].label
+                break
+            end
+        end
+
+        local goldData = NS.DB:GetGoldHistorySummary({
+            days       = selectedDays,
+            charFilter = charFilter,
+        })
 
         local allItems, totals = NS.DB:GetItemProfitSummaries({
             days       = selectedDays,
@@ -357,6 +823,18 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
         })
 
         -- Update Top KPI Banner
+        if goldData and goldData.charCount > 0 then
+            self._kpiValues.gold:SetText("|cFFFFD100" .. NS.FormatMoney(goldData.currentTotal, true) .. "|r")
+        else
+            self._kpiValues.gold:SetText("|cFF998C78--|r")
+        end
+
+        local rClr = (totals.realizedPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
+        self._kpiValues.realized:SetText(rClr .. NS.FormatMoney(totals.realizedPnL, true) .. "|r")
+
+        local tClr = (totals.totalPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
+        self._kpiValues.total:SetText(tClr .. NS.FormatMoney(totals.totalPnL, true) .. "|r")
+
         self._kpiValues.winloss:SetText(string.format("|cFF38D972%d Win|r  /  |cFFF55954%d Loss|r", totals.winners, totals.losers))
 
         if totals.bestItem and totals.bestItem.totalPnL > 0 then
@@ -365,17 +843,10 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
             self._kpiValues.best:SetText("|cFF998C78--|r")
         end
 
-        if totals.worstItem and totals.worstItem.totalPnL < 0 then
-            self._kpiValues.worst:SetText(string.format("%s (|cFFF55954%s|r)", totals.worstItem.name, NS.FormatMoney(totals.worstItem.totalPnL, true)))
-        else
-            self._kpiValues.worst:SetText("|cFF38D972None|r")
+        -- Render TSM-Style Gold Balance Chart
+        if showGoldChart then
+            goldChart:Render(goldData, scopeLabel, selectedDays)
         end
-
-        local rClr = (totals.realizedPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
-        self._kpiValues.realized:SetText(rClr .. NS.FormatMoney(totals.realizedPnL, true) .. "|r")
-
-        local tClr = (totals.totalPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
-        self._kpiValues.total:SetText(tClr .. NS.FormatMoney(totals.totalPnL, true) .. "|r")
 
         -- 3. Filter Winners / Losers and sort
         local list = {}

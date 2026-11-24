@@ -270,6 +270,7 @@ function DB:GetMarket(marketKey)
             ledgerNextId       = 1,
             pendingMailMatches = {},
             charGroups         = {},
+            charGold           = {},
             pinned             = {},
             pinnedOrder        = {},
             lastAutoScan       = 0,
@@ -300,6 +301,9 @@ function DB:GetMarket(marketKey)
     end
     if type(market.charGroups) ~= "table" then
         market.charGroups = {}
+    end
+    if type(market.charGold) ~= "table" then
+        market.charGold = {}
     end
     if type(market.pinned) ~= "table" then
         market.pinned = {}
@@ -691,6 +695,12 @@ function DB:GetKnownCharacters()
         end
     end
 
+    if type(market.charGold) == "table" then
+        for ch in pairs(market.charGold) do
+            AddChar(ch)
+        end
+    end
+
     table.sort(list, function(a, b) return a:lower() < b:lower() end)
     return list
 end
@@ -847,6 +857,260 @@ function DB:GetPortfolioSummary(charFilter)
         estNetValue     = estNetValue,
         unrealizedPnL   = estNetValue - totalInvested,
         realizedProfit  = realizedProfit,
+    }
+end
+
+--------------------------------------------------------------------------------
+-- Per-Character Gold Balance & TSM-Style Gold History Tracking
+--------------------------------------------------------------------------------
+
+local GOLD_MERGE_WINDOW       = 300        -- Merge rapid balance changes within 5 minutes
+local GOLD_INTRADAY_KEEP_SECS = 14 * 86400 -- Keep intraday points for 14 days, then 1 point/day
+local GOLD_MAX_POINTS         = 1200
+
+local function CompactGoldHistory(history, now)
+    if type(history) ~= "table" or #history <= 2 then return end
+    local intradayCutoff = (now or 0) - GOLD_INTRADAY_KEEP_SECS
+    local dailyLast = {}
+    local dailyOrder = {}
+    local recent = {}
+
+    for i = 1, #history do
+        local pt = history[i]
+        if type(pt) == "table" and pt[1] and pt[2] ~= nil then
+            if pt[1] < intradayCutoff then
+                local dk = NS.DayKeyFromTimestamp(pt[1])
+                if not dailyLast[dk] then
+                    table.insert(dailyOrder, dk)
+                end
+                dailyLast[dk] = pt
+            else
+                table.insert(recent, pt)
+            end
+        end
+    end
+
+    table.sort(dailyOrder)
+    local out = {}
+    for i = 1, #dailyOrder do
+        table.insert(out, dailyLast[dailyOrder[i]])
+    end
+    for i = 1, #recent do
+        table.insert(out, recent[i])
+    end
+
+    while #out > GOLD_MAX_POINTS do
+        table.remove(out, 1)
+    end
+
+    for i = 1, #out do history[i] = out[i] end
+    for i = #out + 1, #history do history[i] = nil end
+end
+
+function DB:RecordCharacterGold(copper, character, ts, silent, marketOverride)
+    if demoModeActive and not marketOverride then return false end
+    copper = math.max(0, math.floor((tonumber(copper) or 0) + 0.5))
+    local ch = (type(character) == "string" and character:match("^%s*(.-)%s*$") ~= "")
+        and character:match("^%s*(.-)%s*$")
+        or (UnitName and UnitName("player"))
+    if type(ch) ~= "string" or ch == "" then return false end
+
+    local market = marketOverride or self:GetActiveMarket()
+    if type(market.charGold) ~= "table" then market.charGold = {} end
+
+    local now = ts or (time and time()) or 0
+    local rec = market.charGold[ch]
+    local changed = false
+
+    if type(rec) ~= "table" then
+        rec = {
+            current   = copper,
+            updatedAt = now,
+            history   = { { now, copper } },
+        }
+        market.charGold[ch] = rec
+        changed = true
+    else
+        if type(rec.history) ~= "table" then rec.history = {} end
+        changed = (rec.current ~= copper)
+        rec.current = copper
+        rec.updatedAt = now
+
+        local h = rec.history
+        local n = #h
+        if n == 0 then
+            h[1] = { now, copper }
+        else
+            local last = h[n]
+            if last and math.abs(now - (last[1] or 0)) < GOLD_MERGE_WINDOW then
+                last[1] = math.max(last[1] or now, now)
+                last[2] = copper
+            elseif n >= 2 and h[n][2] == copper and h[n - 1][2] == copper then
+                -- Collapse redundant flat points while preserving exact inflection corners
+                last[1] = math.max(last[1] or now, now)
+            else
+                table.insert(h, { now, copper })
+                if #h > 300 and (#h % 25 == 0) then
+                    CompactGoldHistory(h, now)
+                end
+            end
+        end
+    end
+
+    if changed and not silent then
+        NS:FireCallback("DATA_UPDATED", nil, "GOLD_UPDATED")
+    end
+    return true
+end
+
+-- Aggregates per-character gold histories using exact Step-Carry-Forward (LOCF)
+-- so multi-character or Character-Group totals stay smooth and accurate over time.
+function DB:GetGoldHistorySummary(opts)
+    opts = opts or {}
+    local market = opts.marketOverride or self:GetActiveMarket()
+    local charGold = (type(market.charGold) == "table") and market.charGold or {}
+    local filterSet = self:BuildCharacterFilterSet(opts.charFilter)
+    local now = opts.nowTs or (time and time()) or 0
+
+    local cutoff = 0
+    if opts.days == 1 then
+        if date then
+            local d = date("*t", now)
+            cutoff = now - ((d.hour * 3600) + (d.min * 60) + d.sec)
+        else
+            cutoff = now - 86400
+        end
+    elseif opts.days and opts.days > 1 then
+        cutoff = now - (opts.days * 86400)
+    end
+
+    local matched = {}
+    local chars = {}
+    local currentTotal = 0
+
+    for ch, rec in pairs(charGold) do
+        if type(rec) == "table" and self:MatchesCharacterFilter(ch, filterSet) then
+            local cur = math.max(0, math.floor((tonumber(rec.current) or 0) + 0.5))
+            currentTotal = currentTotal + cur
+            table.insert(chars, {
+                name      = ch,
+                copper    = cur,
+                updatedAt = rec.updatedAt or 0,
+            })
+
+            local hist = {}
+            if type(rec.history) == "table" and #rec.history > 0 then
+                for i = 1, #rec.history do
+                    local pt = rec.history[i]
+                    if type(pt) == "table" and pt[1] and pt[2] ~= nil then
+                        table.insert(hist, { pt[1], math.max(0, math.floor((tonumber(pt[2]) or 0) + 0.5)) })
+                    end
+                end
+                table.sort(hist, function(a, b) return a[1] < b[1] end)
+            else
+                hist[1] = { rec.updatedAt or now, cur }
+            end
+            table.insert(matched, { name = ch, current = cur, updatedAt = rec.updatedAt or now, history = hist })
+        end
+    end
+
+    table.sort(chars, function(a, b)
+        if a.copper ~= b.copper then return a.copper > b.copper end
+        return a.name:lower() < b.name:lower()
+    end)
+
+    -- Collect union of timestamps inside [cutoff, now] plus carry-forward anchor at cutoff
+    local tsSet = {}
+    local tsList = {}
+    local anyBeforeCutoff = false
+    local maxRecordedTs = 0
+
+    for i = 1, #matched do
+        local h = matched[i].history
+        for j = 1, #h do
+            local t = h[j][1]
+            if t > maxRecordedTs then maxRecordedTs = t end
+            if cutoff > 0 and t <= cutoff then
+                anyBeforeCutoff = true
+            elseif t >= cutoff and not tsSet[t] then
+                tsSet[t] = true
+                table.insert(tsList, t)
+            end
+        end
+    end
+
+    if cutoff > 0 and anyBeforeCutoff and not tsSet[cutoff] then
+        tsSet[cutoff] = true
+        table.insert(tsList, cutoff)
+    end
+
+    -- Append live current balance at `now` if we have tracked characters and `now` is after last point
+    if #matched > 0 and now > maxRecordedTs and not tsSet[now] then
+        tsSet[now] = true
+        table.insert(tsList, now)
+    end
+
+    table.sort(tsList)
+
+    -- Step-carry-forward evaluation across all matching characters
+    local pointers = {}
+    for i = 1, #matched do pointers[i] = 0 end
+
+    local points = {}
+    local minCopper = nil
+    local maxCopper = nil
+
+    for ti = 1, #tsList do
+        local t = tsList[ti]
+        local sum = 0
+        local contributing = 0
+        for ci = 1, #matched do
+            local h = matched[ci].history
+            local p = pointers[ci]
+            while p < #h and h[p + 1][1] <= t do
+                p = p + 1
+            end
+            pointers[ci] = p
+            if p > 0 then
+                sum = sum + h[p][2]
+                contributing = contributing + 1
+            end
+        end
+
+        -- At the final live `now` point, guarantee exact match with live `currentTotal`
+        if t == now and #matched > 0 then
+            sum = currentTotal
+            contributing = #matched
+        end
+
+        if contributing > 0 then
+            table.insert(points, { ts = t, copper = sum })
+            if not minCopper or sum < minCopper then minCopper = sum end
+            if not maxCopper or sum > maxCopper then maxCopper = sum end
+        end
+    end
+
+    -- Fallback single point if matched chars exist with empty timestamps
+    if #points == 0 and #matched > 0 then
+        points[1] = { ts = now, copper = currentTotal }
+        minCopper = currentTotal
+        maxCopper = currentTotal
+    end
+
+    local startTotal = (#points > 0) and points[1].copper or currentTotal
+    local periodDelta = currentTotal - startTotal
+    local periodPct = (startTotal > 0) and ((periodDelta / startTotal) * 100) or nil
+
+    return {
+        currentTotal = currentTotal,
+        startTotal   = startTotal,
+        periodDelta  = periodDelta,
+        periodPct    = periodPct,
+        minCopper    = minCopper or 0,
+        maxCopper    = maxCopper or 0,
+        charCount    = #chars,
+        chars        = chars,
+        points       = points,
     }
 end
 

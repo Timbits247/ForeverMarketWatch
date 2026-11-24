@@ -326,10 +326,18 @@ local function CommitPendingMailSale(sale)
     end
 end
 
+local function CaptureCurrentGold(silent)
+    if NS.DB and NS.DB.RecordCharacterGold and not NS.DB:IsDemoMode() then
+        local cur = SafeGetMoney()
+        NS.DB:RecordCharacterGold(cur, nil, nil, silent)
+    end
+end
+
 local function OnPlayerMoneyChanged()
     local current = SafeGetMoney()
     local delta = current - (lastKnownMoney or current)
     lastKnownMoney = current
+    CaptureCurrentGold(false)
 
     if pendingBid then
         CheckPendingBidMoney()
@@ -543,8 +551,10 @@ function Ledger:Init()
 
     -- 3. Event listener
     lastKnownMoney = SafeGetMoney()
+    CaptureCurrentGold(true)
     eventFrame = CreateFrame("Frame")
     eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+    eventFrame:RegisterEvent("PLAYER_LOGOUT")
     eventFrame:RegisterEvent("COMMODITY_PRICE_UPDATED")
     eventFrame:RegisterEvent("COMMODITY_PURCHASE_SUCCEEDED")
     eventFrame:RegisterEvent("COMMODITY_PURCHASE_FAILED")
@@ -558,6 +568,9 @@ function Ledger:Init()
     eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2)
         if event == "PLAYER_ENTERING_WORLD" then
             lastKnownMoney = SafeGetMoney()
+            CaptureCurrentGold(false)
+        elseif event == "PLAYER_LOGOUT" then
+            CaptureCurrentGold(true)
         elseif event == "COMMODITY_PRICE_UPDATED" then
             if pendingCommodity then
                 local up = tonumber(arg1)
@@ -577,17 +590,20 @@ function Ledger:Init()
             OnPlayerMoneyChanged()
         elseif event == "MAIL_SHOW" then
             lastKnownMoney = SafeGetMoney()
+            CaptureCurrentGold(true)
             pendingMailSales = {}
             RefreshInboxSnapshot()
         elseif event == "MAIL_INBOX_UPDATE" then
             RefreshInboxSnapshot()
         elseif event == "MAIL_CLOSED" then
             inboxSnapshot = {}
+            CaptureCurrentGold(false)
         elseif event == "AUCTION_HOUSE_CLOSED" then
             pendingCommodity = nil
             pendingBid = nil
             auctionCache = {}
             auctionCacheCount = 0
+            CaptureCurrentGold(false)
         end
     end)
 end

@@ -96,6 +96,10 @@ local function BuildDemoMarket()
         },
         ledgerNextId = 5,
         pendingMailMatches = {},
+        charGold = {
+            Bankalt = { current = 0, updatedAt = now, history = {} },
+            Mainchar = { current = 0, updatedAt = now, history = {} },
+        },
         pinned = {
             [13468] = true,
             [13444] = true,
@@ -176,6 +180,26 @@ local function BuildDemoMarket()
             },
             lastScan  = now - 240,
         }
+    end
+
+    -- Populate realistic 30-day multi-character gold curves for Demo Preview
+    local bankGold = 500000 -- 50g starting seed
+    local mainGold = 320000 -- 32g main
+    for d = 30, 0, -1 do
+        local ts = now - (d * 86400)
+        local waveB = math.floor(math.sin(d * 0.55) * 35000)
+        local trendB = (30 - d) * 14500
+        local bVal = math.max(120000, bankGold + trendB + waveB)
+        table.insert(market.charGold.Bankalt.history, { ts, bVal })
+        market.charGold.Bankalt.current = bVal
+        market.charGold.Bankalt.updatedAt = ts
+
+        local waveM = math.floor(math.cos(d * 0.4) * 22000)
+        local trendM = (30 - d) * 6800
+        local mVal = math.max(80000, mainGold + trendM + waveM)
+        table.insert(market.charGold.Mainchar.history, { ts + 1800, mVal })
+        market.charGold.Mainchar.current = mVal
+        market.charGold.Mainchar.updatedAt = ts + 1800
     end
 
     return market
@@ -457,6 +481,20 @@ function NS.RunSelfTests()
     local fSet = NS.DB:BuildCharacterFilterSet("GROUP:_TestGroup_")
     AssertTrue("Char group matches Investor", NS.DB:MatchesCharacterFilter("Investor", fSet))
     AssertTrue("Char group excludes Timbits", not NS.DB:MatchesCharacterFilter("Timbits", fSet))
+
+    -- 17. Per-Character Gold History & Filtered Step-Carry-Forward Aggregation
+    local mockGoldMkt = { charGold = {}, charGroups = {} }
+    NS.DB:RecordCharacterGold(50000, "Investor", baseNow - 7200, true, mockGoldMkt)  -- 5g
+    NS.DB:RecordCharacterGold(100000, "Timbits", baseNow - 5400, true, mockGoldMkt)  -- 10g
+    NS.DB:RecordCharacterGold(76900, "Investor", baseNow - 1800, true, mockGoldMkt)  -- 7g 69s
+    local gAll = NS.DB:GetGoldHistorySummary({ charFilter = "ALL", nowTs = baseNow, marketOverride = mockGoldMkt })
+    local gInv = NS.DB:GetGoldHistorySummary({ charFilter = "CHAR:Investor", nowTs = baseNow, marketOverride = mockGoldMkt })
+    local gGrp = NS.DB:GetGoldHistorySummary({ charFilter = "GROUP:_TestGroup_", nowTs = baseNow, marketOverride = mockGoldMkt })
+    AssertEq("Gold ALL current total (7g69s + 10g)", gAll.currentTotal, 176900)
+    AssertEq("Gold ALL charCount = 2", gAll.charCount, 2)
+    AssertEq("Gold Investor current total (7g 69s)", gInv.currentTotal, 76900)
+    AssertEq("Gold Investor period delta (+2g 69s)", gInv.periodDelta, 26900)
+    AssertEq("Gold Group filters to Investor only (7g 69s)", gGrp.currentTotal, 76900)
     NS.DB:DeleteCharacterGroup("_TestGroup_")
 
     if failed == 0 then
