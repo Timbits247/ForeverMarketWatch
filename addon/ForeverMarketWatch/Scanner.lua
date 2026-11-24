@@ -162,10 +162,26 @@ local function AggregateEntries(entries)
         end
     end
 
+    -- Capture top 20 cheapest price tiers so the Flipping tab can calculate exact
+    -- quantity & total gold needed to buy out everything <= your Buy Target!
+    local tiers = {}
+    for i = 1, #entries do
+        local e = entries[i]
+        local lastTier = tiers[#tiers]
+        if lastTier and lastTier[1] == e.price then
+            lastTier[2] = lastTier[2] + e.qty
+        elseif #tiers < 20 then
+            table.insert(tiers, { e.price, e.qty })
+        else
+            break
+        end
+    end
+
     local orderBook = {
         wallQty   = wallQty,
         wallCost  = wallCost,
         nextPrice = nextPrice,
+        tiers     = tiers,
     }
 
     return minPrice, avgPrice, maxPrice, totalQty, orderBook
@@ -491,6 +507,38 @@ function Scanner:StartWatchlistScan(autoTriggered, groupFilter)
     return true
 end
 
+function Scanner:StartDashboardScan()
+    if NS.DB:IsDemoMode() then
+        NS.Print("Demo Mode is active. Run /fmw demo to exit Demo Mode before scanning live AH.")
+        return false
+    end
+    if not ahOpen then
+        NS.Print("Open the Auction House to scan your Dashboard items.")
+        return false
+    end
+    if isScanning then
+        self:StopScan("REPLACED")
+    end
+
+    local ids = NS.DB:GetDashboardPinnedIDs()
+    if #ids == 0 then
+        NS.Print("No pinned items or investments on your Dashboard to scan yet.")
+        return false
+    end
+
+    scanQueue = ids
+    scanTotal = #ids
+    scanIndex = 0
+    isScanning = true
+    isAutoScan = false
+    waitingForResult = false
+    currentItemID = nil
+
+    NS:FireCallback("SCAN_STATE_CHANGED", true, 0, scanTotal, "STARTED")
+    self:TrySendNext()
+    return true
+end
+
 function Scanner:StartTargetScan()
     if NS.DB:IsDemoMode() then
         NS.Print("Demo Mode is active. Run /fmw demo to exit Demo Mode before scanning live AH.")
@@ -582,7 +630,7 @@ local function ResolveItemNameForBuy(itemID)
     return nil
 end
 
-function Scanner:JumpToItemInAH(itemID)
+function Scanner:JumpToItemInAH(itemID, snipeInfo)
     if not ahOpen or not AuctionHouseFrame or not AuctionHouseFrame:IsShown() then
         NS.Print("Open the Auction House to jump to live listings.")
         return false
@@ -596,6 +644,22 @@ function Scanner:JumpToItemInAH(itemID)
     NS:FireCallback("HIDE_AH_OVERLAY")
 
     local itemName = ResolveItemNameForBuy(itemID)
+
+    -- Print a quick 1-line snipe cheat sheet so exact qty & max price stay visible in chat
+    if type(snipeInfo) == "table" and snipeInfo.buyTarget and snipeInfo.buyTarget > 0 then
+        local label = itemName or ("Item #" .. tostring(itemID))
+        if snipeInfo.underQty and snipeInfo.underQty > 0 and snipeInfo.underCost then
+            NS.Print(string.format(
+                "|cFF22EB70[SNIPE]|r %s: |cFFFFD100%d|r unit(s) <= %s (%s total) — type |cFFFFD100%d|r to buy all under target.",
+                label, snipeInfo.underQty, NS.FormatMoney(snipeInfo.buyTarget, true), NS.FormatMoney(snipeInfo.underCost, true), snipeInfo.underQty
+            ))
+        else
+            NS.Print(string.format(
+                "|cFF22EB70[SNIPE]|r %s: buy all listings <= %s (run Scan Targets for exact unit count).",
+                label, NS.FormatMoney(snipeInfo.buyTarget, true)
+            ))
+        end
+    end
 
     -- 1. Preferred: Jump straight to Auctionator's Shopping tab and run an exact search for this item
     if itemName and AuctionatorTabs_Shopping then

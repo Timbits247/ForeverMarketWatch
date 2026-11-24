@@ -410,8 +410,50 @@ function NS.RunSelfTests()
     if sellRec and sellRec.id then NS.DB:DeleteLedgerEntry(sellRec.id, true) end
     NS.DB:ClearInvestment(testLedID)
 
-    -- 15. Flipping Tab Targeted Items Query
+    -- 15. Flipping Tab Targeted Items & Per-Item Profit Rollup Summary
     AssertTrue("GetTargetedItemIDs returns table", type(NS.DB:GetTargetedItemIDs()) == "table")
+    local testRollID = 999995
+    NS.DB:ClearInvestment(testRollID)
+    local _, rb1 = NS.DB:RecordLedgerBuy(testRollID, 5, 50000, { name = "Rollup Herb", source = "AH", ts = baseNow - 900 })
+    local _, rb2 = NS.DB:RecordLedgerBuy(testRollID, 5, 50000, { name = "Rollup Herb", source = "AH", ts = baseNow - 800 })
+    local _, rs1 = NS.DB:RecordLedgerSale(testRollID, 4, 60000, 3000, { name = "Rollup Herb", source = "MAIL", ts = baseNow - 400 })
+    local _, rs2 = NS.DB:RecordLedgerSale(testRollID, 6, 90000, 4500, { name = "Rollup Herb", source = "MAIL", ts = baseNow - 200 })
+    local rollList = NS.DB:GetItemProfitSummaries({ search = "rollup herb", nowTs = baseNow })
+    AssertEq("Per-item rollup merges 4 trades into 1 row", #rollList, 1)
+    if rollList[1] then
+        AssertEq("Rollup buyQty = 10", rollList[1].buyQty, 10)
+        AssertEq("Rollup sellQty = 10", rollList[1].sellQty, 10)
+        AssertEq("Rollup realizedPnL = +42500c", rollList[1].realizedPnL, 42500)
+    end
+    if rb1 and rb1.id then NS.DB:DeleteLedgerEntry(rb1.id, true) end
+    if rb2 and rb2.id then NS.DB:DeleteLedgerEntry(rb2.id, true) end
+    if rs1 and rs1.id then NS.DB:DeleteLedgerEntry(rs1.id, true) end
+    if rs2 and rs2.id then NS.DB:DeleteLedgerEntry(rs2.id, true) end
+    NS.DB:ClearInvestment(testRollID)
+
+    -- 16. Accounting Auto-Repair (Purge Commodity Mail Dups) & Character / Group Filtering
+    local mockRepairMkt = {
+        investments = {},
+        history = {},
+        charGroups = {},
+        ledger = {
+            { id = 1, ts = baseNow - 500, type = "BUY",  itemID = 2318, name = "Light Leather", qty = 100, unitPrice = 75,  gross = 7500,  ahCut = 0,   netTotal = 7500,  character = "Investor", source = "AH" },
+            { id = 2, ts = baseNow - 400, type = "BUY",  itemID = 2318, name = "Light Leather", qty = 20,  unitPrice = 375, gross = 7500,  ahCut = 0,   netTotal = 7500,  character = "Investor", source = "MAIL" }, -- phantom dup!
+            { id = 3, ts = baseNow - 200, type = "SELL", itemID = 2318, name = "Light Leather", qty = 50,  unitPrice = 100, gross = 5000,  ahCut = 250, netTotal = 4750,  character = "Investor", source = "MAIL" },
+        },
+        pendingMailMatches = {},
+    }
+    local repStats = NS.DB:RebuildAccountingFromLedger(true, mockRepairMkt, true)
+    AssertEq("Repair purged 1 phantom commodity MAIL buy", repStats.purged, 1)
+    AssertEq("Repair rebuilt exact qty (100 - 50 = 50)", mockRepairMkt.investments[2318] and mockRepairMkt.investments[2318].qty, 50)
+    AssertEq("Repair rebuilt exact avgCost (75c)", mockRepairMkt.investments[2318] and mockRepairMkt.investments[2318].avgCost, 75)
+    AssertEq("Repair rebuilt exact SELL profit (4750 - 3750 = +1000c)", mockRepairMkt.ledger[2] and mockRepairMkt.ledger[2].profit, 1000)
+
+    NS.DB:SaveCharacterGroup("_TestGroup_", { Investor = true, Bankalt = true })
+    local fSet = NS.DB:BuildCharacterFilterSet("GROUP:_TestGroup_")
+    AssertTrue("Char group matches Investor", NS.DB:MatchesCharacterFilter("Investor", fSet))
+    AssertTrue("Char group excludes Timbits", not NS.DB:MatchesCharacterFilter("Timbits", fSet))
+    NS.DB:DeleteCharacterGroup("_TestGroup_")
 
     if failed == 0 then
         NS.Print(string.format("Self-tests complete: |cFF38D972%d PASSED|r, 0 failed.", passed))

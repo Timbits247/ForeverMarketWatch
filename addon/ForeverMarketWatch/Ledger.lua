@@ -206,36 +206,55 @@ local function RefreshInboxSnapshot()
         return
     end
 
+    local maxSlots = ATTACHMENTS_MAX_RECEIVE or 12
     local numItems = GetInboxNumItems() or 0
     for i = 1, numItems do
         local invoiceType, itemName, playerName, bid, buyout, deposit, consignment, _, _, _, invCount, commerceAuction = GetInboxInvoiceInfo(i)
         if invoiceType == "seller" or invoiceType == "buyer" then
             local _, _, sender, subject, money, _, _, hasItem = GetInboxHeaderInfo(i)
-            local link = (GetInboxItemLink and GetInboxItemLink(i, 1)) or nil
-            local attachName, attachItemID, attachIcon, attachCount = nil, nil, nil, nil
-            if GetInboxItem then
-                local a1, a2, a3, a4 = GetInboxItem(i, 1)
-                attachName = a1
-                -- WoW Modern/Forever returns (name, itemID, texture, count, ...); legacy returns (name, texture, count, ...)
-                if type(a2) == "number" and type(a4) == "number" then
-                    attachItemID = a2
-                    attachIcon = a3
-                    attachCount = a4
-                else
-                    attachIcon = a2
-                    attachCount = a3
+            local firstLink = nil
+            local attachName, attachItemID, attachIcon = nil, nil, nil
+            local totalAttachCount = 0
+            local attachSlots = 0
+
+            for slot = 1, maxSlots do
+                local sLink = (GetInboxItemLink and GetInboxItemLink(i, slot)) or nil
+                if sLink and not firstLink then
+                    firstLink = sLink
+                end
+                if GetInboxItem then
+                    local a1, a2, a3, a4 = GetInboxItem(i, slot)
+                    if a1 then
+                        attachSlots = attachSlots + 1
+                        if not attachName then attachName = a1 end
+                        local slotCount = 1
+                        -- WoW Modern/Forever returns (name, itemID, texture, count, ...); legacy returns (name, texture, count, ...)
+                        if type(a2) == "number" and type(a4) == "number" then
+                            if not attachItemID then attachItemID = a2 end
+                            if not attachIcon then attachIcon = a3 end
+                            slotCount = a4
+                        else
+                            if not attachIcon then attachIcon = a2 end
+                            slotCount = tonumber(a3) or 1
+                        end
+                        totalAttachCount = totalAttachCount + math.max(1, slotCount)
+                    end
                 end
             end
 
-            local itemID = (link and NS.Compat.ParseItemID(link)) or attachItemID or nil
+            local itemID = (firstLink and NS.Compat.ParseItemID(firstLink)) or attachItemID or nil
             local resolvedName = (itemName and itemName ~= "" and itemName) or attachName or ""
-            local qty = (tonumber(attachCount) and tonumber(attachCount) > 0 and tonumber(attachCount))
+            local qty = (totalAttachCount > 0 and totalAttachCount)
                 or (tonumber(invCount) and tonumber(invCount) > 0 and tonumber(invCount))
                 or ParseQuantityFromSubject(subject)
 
+            local maxStack = (itemID and C_Item and C_Item.GetItemMaxStackSizeByID and C_Item.GetItemMaxStackSizeByID(itemID)) or 1
+            local isCommodityMail = (commerceAuction == true) or (attachSlots > 1) or (maxStack > 1)
+
             inboxSnapshot[i] = {
                 invoiceType = invoiceType,
-                isCommodity = commerceAuction and true or false,
+                isCommodity = isCommodityMail,
+                attachSlots = attachSlots,
                 itemID      = itemID,
                 itemName    = resolvedName,
                 icon        = attachIcon,
@@ -247,7 +266,7 @@ local function RefreshInboxSnapshot()
                 deposit     = tonumber(deposit) or 0,
                 consignment = tonumber(consignment) or 0,
                 money       = tonumber(money) or 0,
-                hasItem     = (hasItem and hasItem > 0) or (link ~= nil),
+                hasItem     = (hasItem and hasItem > 0) or (firstLink ~= nil) or (attachSlots > 0),
                 count       = math.max(1, math.floor((qty or 1) + 0.5)),
                 collected   = false,
             }
@@ -293,24 +312,32 @@ local function ProcessCollectedMail(mailIndex, mode)
         if not snap.hasItem then return end
         snap.collected = true
 
+        local itemID = snap.itemID or NS.DB:ResolveItemIDByName(snap.itemName)
         -- Prefer `bid` / max(bid, buyout) so a `buyout = 1` flag never overrides the real purchase price
         local paid = math.max(snap.bid or 0, snap.buyout or 0)
+
+        -- Commodities on WoW: Forever are 100% instant-purchase (no bidding) and are ALWAYS
+        -- captured live at the AH via COMMODITY_PURCHASE_SUCCEEDED with exact qty & copper.
+        -- Never re-log commodity buyer mails from the mailbox (avoids multi-stack split inflation!).
+        if snap.isCommodity then
+            if itemID then
+                NS.DB:ConsumePendingMailMatch(itemID, snap.count, paid)
+            end
+            return
+        end
+
         if paid <= 0 then return end
 
-        local itemID = snap.itemID or NS.DB:ResolveItemIDByName(snap.itemName)
-        local unloggedQty = snap.count
         if itemID then
-            local fullyMatched, remQty = NS.DB:ConsumePendingMailMatch(itemID, snap.count, paid)
+            local fullyMatched = NS.DB:ConsumePendingMailMatch(itemID, snap.count, paid)
             if fullyMatched then
-                -- Already auto-logged live at the AH when purchased; skip duplicate
+                -- Non-commodity buyout already auto-logged live at the AH; skip duplicate
                 return
             end
-            unloggedQty = remQty or snap.count
         end
-        if unloggedQty <= 0 then return end
 
-        local proportionalPaid = (unloggedQty == snap.count) and paid or math.floor((paid * (unloggedQty / snap.count)) + 0.5)
-        local ok, rec = NS.DB:RecordLedgerBuy(itemID, unloggedQty, proportionalPaid, {
+        -- Non-commodity offline bid win (e.g. BoE gear/weapon/recipe won while offline)
+        local ok, rec = NS.DB:RecordLedgerBuy(itemID, snap.count, paid, {
             name         = snap.itemName,
             icon         = snap.icon,
             counterparty = snap.playerName,

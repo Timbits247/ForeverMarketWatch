@@ -270,12 +270,15 @@ local function HandleSlashCommand(msg)
             NS.ToggleDemoMode()
             Standalone:Show()
         end
+    elseif cmd == "repair" then
+        local stats = NS.DB:RebuildAccountingFromLedger(true)
+        NS.Print(string.format("Accounting rebuilt: purged %d duplicate mail buy rows, replayed %d trades cleanly.", stats.purged or 0, stats.replayed or 0))
     elseif cmd == "test" then
         if NS.RunSelfTests then
             NS.RunSelfTests()
         end
     else
-        NS.Print("Commands: /fmw (toggle), /fmw scan, /fmw add <name|link|id>, /fmw seed (restore profession mats), /fmw demo, /fmw test")
+        NS.Print("Commands: /fmw (toggle), /fmw scan, /fmw add <name|link|id>, /fmw seed, /fmw repair (recalc ledger), /fmw demo, /fmw test")
     end
 end
 

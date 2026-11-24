@@ -2,7 +2,7 @@
 ## Title: |cFFFFD100ForeverMarketWatch|r
 ## Notes: Classic WoW Auction House stock-style price history, interactive charts, and profession watchlist tracker for World of Warcraft: Forever.
 ## Author: ForeverMarketWatch
-## Version: 2.1.0
+## Version: 2.2.0
 ## SavedVariables: ForeverMarketWatchDB
 
 Core.lua
@@ -18,6 +18,7 @@ DashboardUI.lua
 FlippingUI.lua
 InventoryUI.lua
 LedgerUI.lua
+ProfitsUI.lua
 WatchlistUI.lua
 StandaloneFrame.lua
 AuctionHouseTab.lua

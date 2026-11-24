@@ -30,7 +30,7 @@ local function ResolveInventoryDisplay(itemID, inv)
     return name, icon, quality, hist
 end
 
-function InventoryUI.Create(parent, onOpenItem, onEditItem)
+function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
     local frame = CreateFrame("Frame", nil, parent)
     frame:SetAllPoints(parent)
     frame:Hide()
@@ -115,15 +115,28 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem)
         prevBtn = b
     end
 
-    local searchBox, searchEB = NS.CreateEditBox(ctrlBar, 178, 22, "Filter item or alt...")
-    searchBox:SetPoint("LEFT", prevBtn, "RIGHT", 14, 0)
+    local searchBox, searchEB = NS.CreateEditBox(ctrlBar, 144, 22, "Filter item or alt...")
+    searchBox:SetPoint("LEFT", prevBtn, "RIGHT", 10, 0)
     searchEB:SetScript("OnTextChanged", function(self)
         searchText = (self:GetText() or ""):lower():match("^%s*(.-)%s*$")
         frame:Refresh()
     end)
     searchEB:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
 
-    local autoTrackBtn = NS.CreateButton(ctrlBar, "Auto-Track: ON", 122, 22, false)
+    local charDrop = NS.CreateDropdown(ctrlBar, 128, 22, function(val)
+        if NS.UI and NS.UI.SetCharFilter then
+            NS.UI.SetCharFilter(val)
+        end
+    end)
+    charDrop:SetPoint("LEFT", searchBox, "RIGHT", 8, 0)
+
+    local altsBtn = NS.CreateButton(ctrlBar, "Alts", 40, 22, false)
+    altsBtn:SetPoint("LEFT", charDrop, "RIGHT", 4, 0)
+    altsBtn:SetScript("OnClick", function(self)
+        if onOpenCharGroups then onOpenCharGroups(self) end
+    end)
+
+    local autoTrackBtn = NS.CreateButton(ctrlBar, "Auto-Track: ON", 114, 22, false)
     autoTrackBtn:SetPoint("RIGHT", ctrlBar, "RIGHT", -8, 0)
     autoTrackBtn:SetScript("OnClick", function()
         local s = NS.DB:GetSettings()
@@ -318,8 +331,12 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem)
         autoTrackBtn:SetTextLabel("Auto-Track: " .. (trackingOn and "|cFF38D972ON|r" or "|cFFF55954OFF|r"))
         autoTrackBtn:SetActiveState(trackingOn)
 
+        local charFilter = (NS.UI and NS.UI.GetCharFilter and NS.UI.GetCharFilter()) or "ALL"
+        charDrop:SetOptions(NS.DB:GetCharacterFilterOptions())
+        charDrop:SetSelected(charFilter, false)
+
         -- 2. Update Top KPI Banner
-        local port = NS.DB:GetPortfolioSummary()
+        local port = NS.DB:GetPortfolioSummary(charFilter)
         self._kpiValues.cost:SetText(NS.FormatMoney(port.totalInvested, true))
         self._kpiValues.value:SetText(NS.FormatMoney(port.estNetValue, true))
 
@@ -346,7 +363,8 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem)
         local cutRate = (NS.Analytics and NS.Analytics.GetAHCutRate()) or 0.05
         local list = {}
 
-        for itemID, inv in pairs(investments) do
+        for itemID in pairs(investments) do
+            local inv = NS.DB:GetInvestmentView(itemID, charFilter)
             if type(inv) == "table" then
                 local qty = inv.qty or 0
                 local include = true

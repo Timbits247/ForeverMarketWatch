@@ -88,9 +88,20 @@ function Dashboard.Create(parent, onOpenItem)
     pinTitle:SetPoint("TOPLEFT", 12, -10)
     pinTitle:SetText("Pinned Investments & Market Watch (Today 00:00 -> 24:00)")
 
+    local scanBtn = NS.CreateButton(pinnedPanel, "Scan Pinned", 96, 21, true)
+    scanBtn:SetPoint("TOPRIGHT", pinnedPanel, "TOPRIGHT", -10, -6)
+    scanBtn:SetScript("OnClick", function()
+        if NS.Scanner:IsScanning() then
+            NS.Scanner:StopScan("USER_STOP")
+        else
+            NS.Scanner:StartDashboardScan()
+        end
+    end)
+    frame._scanBtn = scanBtn
+
     local pinHint = pinnedPanel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    pinHint:SetPoint("TOPRIGHT", -14, -12)
-    pinHint:SetText("Drag cards to reorder  |  Click to open full chart")
+    pinHint:SetPoint("RIGHT", scanBtn, "LEFT", -10, 0)
+    pinHint:SetText("Drag to reorder  |  Click for chart")
 
     local pinScroll = CreateFrame("ScrollFrame", "ForeverMarketWatchDashScroll", pinnedPanel, "UIPanelScrollFrameTemplate")
     pinScroll:SetPoint("TOPLEFT", pinnedPanel, "TOPLEFT", 10, -32)
@@ -321,6 +332,17 @@ function Dashboard.Create(parent, onOpenItem)
         local pinnedIDs = NS.DB:GetDashboardPinnedIDs()
         pinEmpty:SetShown(#pinnedIDs == 0)
 
+        local ahOpen = NS.Scanner and NS.Scanner:IsAuctionHouseOpen()
+        local scanning = NS.Scanner and NS.Scanner:IsScanning()
+        local isDemo = NS.DB:IsDemoMode()
+        if scanning then
+            scanBtn:SetTextLabel("Stop")
+            scanBtn:SetEnabledState(true)
+        else
+            scanBtn:SetTextLabel("Scan Pinned")
+            scanBtn:SetEnabledState(ahOpen and not isDemo and #pinnedIDs > 0)
+        end
+
         local viewW = math.max(360, pinScroll:GetWidth() or 720)
         pinChild:SetWidth(viewW)
         local cols = (viewW >= 620) and 3 or 2
@@ -364,10 +386,17 @@ function Dashboard.Create(parent, onOpenItem)
                     pClr,
                     sum.investUnrealizedPnL and NS.FormatMoney(sum.investUnrealizedPnL, true) or "--"
                 ))
-            elseif sum.wallQty and sum.wallCost then
-                card.footTxt:SetText(string.format("Dip Wall: %d (%s)  |  Qty: %d", sum.wallQty, NS.FormatMoney(sum.wallCost, true), sum.latestQty or 0))
             else
-                card.footTxt:SetText(string.format("Supply: %d  |  7D Avg: %s", sum.latestQty or 0, sum.avg7d and NS.FormatMoney(sum.avg7d, true) or "--"))
+                local swStr = "--"
+                if sum.swing7dPct ~= nil then
+                    local swClr = (sum.swing7dPct >= 20) and "|cFF38D972" or ((sum.swing7dPct >= 10) and "|cFFFFD100" or "|cFFB0A48E")
+                    swStr = string.format("%s%.0f%%|r", swClr, sum.swing7dPct)
+                end
+                local liqClr = (sum.liquidityTier == "High") and "|cFF38D972" or ((sum.liquidityTier == "Med") and "|cFFFFD100" or "|cFFF55954")
+                local wallPart = (sum.wallQty and sum.wallQty > 0) and ("  |  Wall: " .. tostring(sum.wallQty)) or ""
+                card.footTxt:SetText(string.format("Swing: %s  |  Vol: %d (%s%s|r)%s",
+                    swStr, sum.latestQty or 0, liqClr, sum.liquidityTier or "Low", wallPart
+                ))
             end
 
             card.spark:Render(sum.series, dayCtx)

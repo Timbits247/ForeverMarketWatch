@@ -10,9 +10,10 @@ NS.UI = UI
 
 local mainView = nil
 local selectedItemID = nil
-local selectedPage = "MARKET" -- "DASHBOARD" or "MARKET"
+local selectedPage = "MARKET" -- "DASHBOARD", "MARKET", "FLIPPING", "INVENTORY", "LEDGER", "PROFITS"
 local selectedGroupFilter = "All"
 local selectedLowFilter = "NONE" -- "NONE", "FLIPS", "24H", "7D", "30D", "INVEST"
+local selectedCharFilter = "ALL" -- "ALL", "CHAR:<name>", "GROUP:<name>"
 local selectedSort = "name_asc"
 local selectedTimeframe = nil
 local selectedChartMode = nil
@@ -76,8 +77,187 @@ local function CloseAllPopovers()
     if mainView._settingsPopover then mainView._settingsPopover:Hide() end
     if mainView._investPopover then mainView._investPopover:Hide() end
     if mainView._craftsPopover then mainView._craftsPopover:Hide() end
+    if mainView._charGroupsPopover then mainView._charGroupsPopover:Hide() end
     if mainView._searchPopup then mainView._searchPopup:Hide() end
     if mainView._matsHoverCard then mainView._matsHoverCard:Hide() end
+end
+
+local function CreateCharGroupsPopover()
+    local pop = NS.CreatePanel(UIParent, nil, NS.COLORS.BG_DARK, NS.COLORS.BORDER_ACCENT, false)
+    pop:SetSize(296, 310)
+    pop:SetFrameStrata("FULLSCREEN_DIALOG")
+    pop:SetFrameLevel(205)
+    pop:EnableMouse(true)
+    pop:SetClampedToScreen(true)
+    pop:Hide()
+
+    local title = pop:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", 12, -10)
+    title:SetText("Character Groups (Filter Alts)")
+
+    local closeBtn = NS.CreateButton(pop, "Close", 50, 19, false)
+    closeBtn:SetPoint("TOPRIGHT", -10, -8)
+    closeBtn:SetScript("OnClick", function() pop:Hide() end)
+
+    local nameLbl = pop:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    nameLbl:SetPoint("TOPLEFT", 12, -36)
+    nameLbl:SetText("Group Name:")
+
+    local nameBox, nameEB = NS.CreateEditBox(pop, 146, 22, "e.g. Flippers")
+    nameBox:SetPoint("LEFT", nameLbl, "RIGHT", 6, 0)
+
+    local saveBtn = NS.CreateButton(pop, "Save", 54, 22, true)
+    saveBtn:SetPoint("LEFT", nameBox, "RIGHT", 4, 0)
+
+    local pickLbl = pop:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    pickLbl:SetPoint("TOPLEFT", 12, -64)
+    pickLbl:SetText("Toggle characters in this group:")
+
+    local charChipsHost = CreateFrame("Frame", nil, pop)
+    charChipsHost:SetPoint("TOPLEFT", 12, -80)
+    charChipsHost:SetPoint("TOPRIGHT", -12, -80)
+    charChipsHost:SetHeight(82)
+
+    local statusTxt = pop:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    statusTxt:SetPoint("TOPLEFT", 12, -166)
+    statusTxt:SetPoint("TOPRIGHT", -12, -166)
+    statusTxt:SetJustifyH("LEFT")
+    statusTxt:SetText("")
+
+    local savedLbl = pop:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    savedLbl:SetPoint("TOPLEFT", 12, -184)
+    savedLbl:SetText("Saved Groups:")
+
+    local listHost = CreateFrame("Frame", nil, pop)
+    listHost:SetPoint("TOPLEFT", 12, -200)
+    listHost:SetPoint("BOTTOMRIGHT", -12, 10)
+
+    local selectedMembers = {}
+    local chipBtns = {}
+    local groupRows = {}
+
+    local function RefreshPopover()
+        local chars = NS.DB:GetKnownCharacters()
+        local cols = 2
+        local chipW = 132
+        local chipH = 22
+        local gap = 4
+
+        for i = 1, math.min(#chars, 6) do
+            local ch = chars[i]
+            local btn = chipBtns[i]
+            if not btn then
+                btn = NS.CreateButton(charChipsHost, "", chipW, chipH, false)
+                chipBtns[i] = btn
+            end
+            local r = math.floor((i - 1) / cols)
+            local c = (i - 1) % cols
+            btn:ClearAllPoints()
+            btn:SetPoint("TOPLEFT", charChipsHost, "TOPLEFT", c * (chipW + gap), -(r * (chipH + gap)))
+            local isOn = (selectedMembers[ch] == true)
+            btn:SetTextLabel((isOn and "|cFF38D972[x]|r " or "|cFF8A7E6B[ ]|r ") .. ch)
+            btn:SetActiveState(isOn)
+            btn:SetScript("OnClick", function()
+                selectedMembers[ch] = not (selectedMembers[ch] == true)
+                RefreshPopover()
+            end)
+            btn:Show()
+        end
+        for i = math.min(#chars, 6) + 1, #chipBtns do
+            chipBtns[i]:Hide()
+        end
+
+        local groups = NS.DB:GetCharacterGroups()
+        local gNames = {}
+        for gName in pairs(groups) do table.insert(gNames, gName) end
+        table.sort(gNames, function(a, b) return a:lower() < b:lower() end)
+
+        for i = 1, math.min(#gNames, 4) do
+            local gName = gNames[i]
+            local row = groupRows[i]
+            if not row then
+                row = NS.CreatePanel(listHost, nil, NS.COLORS.BG_ROW, NS.COLORS.BORDER, true)
+                row:SetHeight(22)
+                local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                lbl:SetPoint("LEFT", 6, 0)
+                lbl:SetPoint("RIGHT", -68, 0)
+                lbl:SetJustifyH("LEFT")
+                lbl:SetWordWrap(false)
+                row.lbl = lbl
+
+                local editB = NS.CreateButton(row, "Edit", 36, 18, false)
+                editB:SetPoint("RIGHT", -24, 0)
+                row.editB = editB
+
+                local delB = NS.CreateButton(row, "x", 18, 18, false)
+                delB:SetPoint("RIGHT", -3, 0)
+                row.delB = delB
+
+                groupRows[i] = row
+            end
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT", listHost, "TOPLEFT", 0, -((i - 1) * 24))
+            row:SetPoint("TOPRIGHT", listHost, "TOPRIGHT", 0, -((i - 1) * 24))
+
+            local mList = {}
+            for ch, fl in pairs(groups[gName] or {}) do
+                if fl then table.insert(mList, ch) end
+            end
+            table.sort(mList)
+            row.lbl:SetText(gName .. " |cFF998C78(" .. table.concat(mList, ", ") .. ")|r")
+
+            row.editB:SetScript("OnClick", function()
+                nameEB:SetText(gName)
+                selectedMembers = {}
+                for ch, fl in pairs(groups[gName] or {}) do
+                    if fl then selectedMembers[ch] = true end
+                end
+                statusTxt:SetText("Editing '" .. gName .. "'")
+                RefreshPopover()
+            end)
+            row.delB:SetScript("OnClick", function()
+                if selectedCharFilter == ("GROUP:" .. gName) then
+                    selectedCharFilter = "ALL"
+                end
+                NS.DB:DeleteCharacterGroup(gName)
+                statusTxt:SetText("Deleted '" .. gName .. "'")
+                RefreshPopover()
+            end)
+            row:Show()
+        end
+        for i = math.min(#gNames, 4) + 1, #groupRows do
+            groupRows[i]:Hide()
+        end
+    end
+
+    saveBtn:SetScript("OnClick", function()
+        local gName = (nameEB:GetText() or ""):match("^%s*(.-)%s*$")
+        local ok, err = NS.DB:SaveCharacterGroup(gName, selectedMembers)
+        if ok then
+            statusTxt:SetText("|cFF38D972Saved group '" .. gName .. "'!|r")
+            selectedCharFilter = "GROUP:" .. gName
+            nameEB:SetText("")
+            nameEB:ClearFocus()
+            RefreshPopover()
+            UI.RefreshAll()
+        else
+            statusTxt:SetText("|cFFF55954" .. tostring(err) .. "|r")
+        end
+    end)
+
+    function pop:OpenAt(anchor)
+        CloseAllPopovers()
+        statusTxt:SetText("")
+        RefreshPopover()
+        self:ClearAllPoints()
+        self:SetPoint("TOPRIGHT", anchor, "BOTTOMRIGHT", 0, -4)
+        self:SetFrameStrata("FULLSCREEN_DIALOG")
+        self:SetFrameLevel(205)
+        self:Show()
+        self:Raise()
+    end
+
+    return pop
 end
 
 local function CreateTargetsPopover()
@@ -924,32 +1104,36 @@ function UI.GetOrCreateMainView()
     mainView = root
 
     ----------------------------------------------------------------------------
-    -- TOP PAGE SWITCHER BAR (Dashboard | Market & Charts | Flipping | Inventory | Ledger)
+    -- TOP PAGE SWITCHER BAR (Dashboard | Market & Charts | Flipping | Inventory | Ledger | Profits)
     ----------------------------------------------------------------------------
     local topNav = CreateFrame("Frame", nil, root)
     topNav:SetPoint("TOPLEFT", root, "TOPLEFT", 0, 0)
     topNav:SetPoint("TOPRIGHT", root, "TOPRIGHT", 0, 0)
     topNav:SetHeight(24)
 
-    local dashTabBtn = NS.CreateButton(topNav, "Dashboard", 82, 22, false)
+    local dashTabBtn = NS.CreateButton(topNav, "Dashboard", 76, 22, false)
     dashTabBtn:SetPoint("LEFT", topNav, "LEFT", 0, 0)
     root._dashTabBtn = dashTabBtn
 
-    local marketTabBtn = NS.CreateButton(topNav, "Market & Charts", 108, 22, false)
+    local marketTabBtn = NS.CreateButton(topNav, "Market & Charts", 102, 22, false)
     marketTabBtn:SetPoint("LEFT", dashTabBtn, "RIGHT", 4, 0)
     root._marketTabBtn = marketTabBtn
 
-    local flipTabBtn = NS.CreateButton(topNav, "Flipping", 68, 22, false)
+    local flipTabBtn = NS.CreateButton(topNav, "Flipping", 82, 22, false)
     flipTabBtn:SetPoint("LEFT", marketTabBtn, "RIGHT", 4, 0)
     root._flipTabBtn = flipTabBtn
 
-    local invTabBtn = NS.CreateButton(topNav, "Inventory", 76, 22, false)
+    local invTabBtn = NS.CreateButton(topNav, "Inventory", 70, 22, false)
     invTabBtn:SetPoint("LEFT", flipTabBtn, "RIGHT", 4, 0)
     root._invTabBtn = invTabBtn
 
-    local ledgerTabBtn = NS.CreateButton(topNav, "Ledger", 64, 22, false)
+    local ledgerTabBtn = NS.CreateButton(topNav, "Ledger", 56, 22, false)
     ledgerTabBtn:SetPoint("LEFT", invTabBtn, "RIGHT", 4, 0)
     root._ledgerTabBtn = ledgerTabBtn
+
+    local profitsTabBtn = NS.CreateButton(topNav, "Profits", 56, 22, false)
+    profitsTabBtn:SetPoint("LEFT", ledgerTabBtn, "RIGHT", 4, 0)
+    root._profitsTabBtn = profitsTabBtn
 
     local navStatusTxt = topNav:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     navStatusTxt:SetPoint("RIGHT", topNav, "RIGHT", -4, 0)
@@ -983,15 +1167,24 @@ function UI.GetOrCreateMainView()
     end)
     root._flippingPage = flippingPage
 
+    local function OpenCharGroupsPopover(anchor)
+        if root._charGroupsPopover then
+            root._charGroupsPopover:OpenAt(anchor)
+        end
+    end
+
     local inventoryPage = NS.InventoryUI.Create(contentHost, OpenItemFromSubTab, function(anchor, itemID)
         if root._investPopover and itemID then
             root._investPopover:OpenForItem(anchor, itemID)
         end
-    end)
+    end, OpenCharGroupsPopover)
     root._inventoryPage = inventoryPage
 
-    local ledgerPage = NS.LedgerUI.Create(contentHost, OpenItemFromSubTab)
+    local ledgerPage = NS.LedgerUI.Create(contentHost, OpenItemFromSubTab, OpenCharGroupsPopover)
     root._ledgerPage = ledgerPage
+
+    local profitsPage = NS.ProfitsUI.Create(contentHost, OpenItemFromSubTab, OpenCharGroupsPopover)
+    root._profitsPage = profitsPage
 
     local function SwitchToPage(pageName)
         selectedPage = pageName
@@ -1000,11 +1193,12 @@ function UI.GetOrCreateMainView()
         UI.RefreshAll()
     end
 
-    dashTabBtn:SetScript("OnClick",   function() SwitchToPage("DASHBOARD") end)
-    marketTabBtn:SetScript("OnClick", function() SwitchToPage("MARKET") end)
-    flipTabBtn:SetScript("OnClick",   function() SwitchToPage("FLIPPING") end)
-    invTabBtn:SetScript("OnClick",    function() SwitchToPage("INVENTORY") end)
-    ledgerTabBtn:SetScript("OnClick", function() SwitchToPage("LEDGER") end)
+    dashTabBtn:SetScript("OnClick",    function() SwitchToPage("DASHBOARD") end)
+    marketTabBtn:SetScript("OnClick",  function() SwitchToPage("MARKET") end)
+    flipTabBtn:SetScript("OnClick",    function() SwitchToPage("FLIPPING") end)
+    invTabBtn:SetScript("OnClick",     function() SwitchToPage("INVENTORY") end)
+    ledgerTabBtn:SetScript("OnClick",  function() SwitchToPage("LEDGER") end)
+    profitsTabBtn:SetScript("OnClick", function() SwitchToPage("PROFITS") end)
 
     ----------------------------------------------------------------------------
     -- LEFT PANE: Classic AH Category Filters + Search-to-Add + Watchlist Table
@@ -1689,8 +1883,9 @@ function UI.GetOrCreateMainView()
     root._groupsPopover   = CreateGroupsPopover()
     root._settingsPopover = CreateSettingsPopover()
     root._investPopover   = CreateInvestPopover()
-    root._craftsPopover   = CreateCraftsPopover()
-    root._matsHoverCard   = CreateMatsHoverCard()
+    root._craftsPopover     = CreateCraftsPopover()
+    root._charGroupsPopover = CreateCharGroupsPopover()
+    root._matsHoverCard     = CreateMatsHoverCard()
 
     ----------------------------------------------------------------------------
     -- Wire Up Toolbar Actions & Callbacks
@@ -1768,6 +1963,8 @@ function UI.GetOrCreateMainView()
                         if mainView._flippingPage then mainView._flippingPage:Refresh() end
                     elseif selectedPage == "INVENTORY" then
                         if mainView._inventoryPage then mainView._inventoryPage:Refresh() end
+                    elseif selectedPage == "PROFITS" then
+                        if mainView._profitsPage then mainView._profitsPage:Refresh() end
                     elseif selectedPage == "LEDGER" then
                         -- Ledger history does not change on price snapshots
                     else
@@ -1788,16 +1985,24 @@ function UI.GetOrCreateMainView()
     end)
     NS:RegisterCallback("AH_STATE_CHANGED", function()
         UI.RefreshActionButtons()
-        if mainView and mainView:IsShown() and selectedPage == "FLIPPING" and mainView._flippingPage then
-            mainView._flippingPage:Refresh()
+        if mainView and mainView:IsShown() then
+            if selectedPage == "DASHBOARD" and mainView._dashboardPage then
+                mainView._dashboardPage:Refresh()
+            elseif selectedPage == "FLIPPING" and mainView._flippingPage then
+                mainView._flippingPage:Refresh()
+            end
         end
     end)
     NS:RegisterCallback("LAST_VIEWED_ITEM_CHANGED", function() UI.RefreshActionButtons() end)
     NS:RegisterCallback("SCAN_STATE_CHANGED", function(scanning, idx, total)
         UI.RefreshScanProgress(scanning, idx, total)
         UI.RefreshActionButtons()
-        if mainView and mainView:IsShown() and selectedPage == "FLIPPING" and mainView._flippingPage then
-            mainView._flippingPage:Refresh()
+        if mainView and mainView:IsShown() then
+            if selectedPage == "DASHBOARD" and mainView._dashboardPage then
+                mainView._dashboardPage:Refresh()
+            elseif selectedPage == "FLIPPING" and mainView._flippingPage then
+                mainView._flippingPage:Refresh()
+            end
         end
     end)
     NS:RegisterCallback("SCAN_PROGRESS", function(idx, total, itemID)
@@ -1861,23 +2066,26 @@ end
 
 function UI.ApplyPageVisibility()
     if not mainView then return end
-    local isDash   = (selectedPage == "DASHBOARD")
-    local isMarket = (selectedPage == "MARKET")
-    local isFlip   = (selectedPage == "FLIPPING")
-    local isInv    = (selectedPage == "INVENTORY")
-    local isLedger = (selectedPage == "LEDGER")
+    local isDash    = (selectedPage == "DASHBOARD")
+    local isMarket  = (selectedPage == "MARKET")
+    local isFlip    = (selectedPage == "FLIPPING")
+    local isInv     = (selectedPage == "INVENTORY")
+    local isLedger  = (selectedPage == "LEDGER")
+    local isProfits = (selectedPage == "PROFITS")
 
     mainView._dashboardPage:SetShown(isDash)
     mainView._marketPage:SetShown(isMarket)
     if mainView._flippingPage then mainView._flippingPage:SetShown(isFlip) end
     if mainView._inventoryPage then mainView._inventoryPage:SetShown(isInv) end
     if mainView._ledgerPage then mainView._ledgerPage:SetShown(isLedger) end
+    if mainView._profitsPage then mainView._profitsPage:SetShown(isProfits) end
 
     mainView._dashTabBtn:SetActiveState(isDash)
     mainView._marketTabBtn:SetActiveState(isMarket)
     if mainView._flipTabBtn then mainView._flipTabBtn:SetActiveState(isFlip) end
     if mainView._invTabBtn then mainView._invTabBtn:SetActiveState(isInv) end
     if mainView._ledgerTabBtn then mainView._ledgerTabBtn:SetActiveState(isLedger) end
+    if mainView._profitsTabBtn then mainView._profitsTabBtn:SetActiveState(isProfits) end
 end
 
 function UI.MountInto(hostFrame, padLeft, padRight, padTop, padBottom)
@@ -2644,6 +2852,16 @@ function UI.RefreshAll()
     if not mainView then return end
     UI.ApplyPageVisibility()
 
+    -- Live green Buy-snipe count badge on the Flipping tab button
+    if mainView._flipTabBtn and NS.FlippingUI and NS.FlippingUI.CountBuyHits then
+        local buyHits = NS.FlippingUI.CountBuyHits()
+        if buyHits > 0 then
+            mainView._flipTabBtn:SetTextLabel(string.format("Flipping |cFF22EB70(%d)|r", buyHits))
+        else
+            mainView._flipTabBtn:SetTextLabel("Flipping")
+        end
+    end
+
     -- Update top status bar
     if mainView._navStatusTxt then
         local apiTs = NS.DB:GetExternalSyncTimestamp()
@@ -2668,12 +2886,25 @@ function UI.RefreshAll()
         if mainView._ledgerPage then
             mainView._ledgerPage:Refresh()
         end
+    elseif selectedPage == "PROFITS" then
+        if mainView._profitsPage then
+            mainView._profitsPage:Refresh()
+        end
     else
         UI.RefreshGroups()
         UI.RefreshWatchlist()
         UI.RefreshDetail()
         UI.RefreshActionButtons()
     end
+end
+
+function UI.GetCharFilter()
+    return selectedCharFilter or "ALL"
+end
+
+function UI.SetCharFilter(val)
+    selectedCharFilter = (type(val) == "string" and val ~= "") and val or "ALL"
+    UI.RefreshAll()
 end
 
 function UI.SelectItem(itemID)

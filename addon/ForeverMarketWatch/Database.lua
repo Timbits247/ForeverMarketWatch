@@ -54,6 +54,7 @@ function DB:Init()
     if type(ForeverMarketWatchDB) ~= "table" then
         ForeverMarketWatchDB = {}
     end
+    local prevSchema = tonumber(ForeverMarketWatchDB.schemaVersion) or 0
     ForeverMarketWatchDB.schemaVersion = NS.SCHEMA_VERSION
 
     if type(ForeverMarketWatchDB.settings) ~= "table" then
@@ -71,6 +72,21 @@ function DB:Init()
 
     if type(ForeverMarketWatchDB.markets) ~= "table" then
         ForeverMarketWatchDB.markets = {}
+    end
+
+    -- One-time v4 accounting repair: purges duplicate commodity MAIL BUY entries
+    -- from earlier beta builds and replays all real trades to rebuild exact cost bases & per-char splits.
+    if prevSchema > 0 and prevSchema < 4 then
+        local totalPurged = 0
+        for _, m in pairs(ForeverMarketWatchDB.markets) do
+            if type(m) == "table" and type(m.ledger) == "table" and #m.ledger > 0 then
+                local stats = self:RebuildAccountingFromLedger(true, m, true)
+                totalPurged = totalPurged + (stats and stats.purged or 0)
+            end
+        end
+        if totalPurged > 0 then
+            NS.Print(string.format("Accounting auto-repair: removed %d duplicate commodity mail buy rows & recalculated exact cost bases and profits.", totalPurged))
+        end
     end
 
     -- Ensure current market exists, seed profession mats if not yet seeded,
@@ -252,6 +268,7 @@ function DB:GetMarket(marketKey)
             ledger             = {},
             ledgerNextId       = 1,
             pendingMailMatches = {},
+            charGroups         = {},
             pinned             = {},
             pinnedOrder        = {},
             lastAutoScan       = 0,
@@ -279,6 +296,9 @@ function DB:GetMarket(marketKey)
     end
     if type(market.pendingMailMatches) ~= "table" then
         market.pendingMailMatches = {}
+    end
+    if type(market.charGroups) ~= "table" then
+        market.charGroups = {}
     end
     if type(market.pinned) ~= "table" then
         market.pinned = {}
@@ -574,7 +594,220 @@ function DB:UpdateInvestmentPosition(itemID, newQty, newAvgCost)
     return true
 end
 
-function DB:GetPortfolioSummary()
+--------------------------------------------------------------------------------
+-- Character & Character-Group Filtering (Account-Wide / Per-Alt / Custom Groups)
+--------------------------------------------------------------------------------
+
+function DB:GetCharacterGroups()
+    local market = self:GetActiveMarket()
+    if type(market.charGroups) ~= "table" then
+        market.charGroups = {}
+    end
+    return market.charGroups
+end
+
+function DB:SaveCharacterGroup(groupName, membersMap)
+    if type(groupName) ~= "string" then return false, "Enter a group name." end
+    local clean = groupName:match("^%s*(.-)%s*$")
+    if clean == "" then return false, "Enter a group name." end
+
+    local cleanMembers = {}
+    local count = 0
+    if type(membersMap) == "table" then
+        for charName, flag in pairs(membersMap) do
+            if flag and type(charName) == "string" and charName ~= "" then
+                cleanMembers[charName] = true
+                count = count + 1
+            end
+        end
+    end
+    if count == 0 then
+        return false, "Select at least one character for this group."
+    end
+
+    local groups = self:GetCharacterGroups()
+    groups[clean] = cleanMembers
+    NS:FireCallback("DATA_UPDATED", nil, "CHAR_GROUPS_UPDATED")
+    return true
+end
+
+function DB:DeleteCharacterGroup(groupName)
+    local groups = self:GetCharacterGroups()
+    if groups[groupName] then
+        groups[groupName] = nil
+        NS:FireCallback("DATA_UPDATED", nil, "CHAR_GROUPS_UPDATED")
+        return true
+    end
+    return false
+end
+
+function DB:GetKnownCharacters()
+    local market = self:GetActiveMarket()
+    local seen = {}
+    local list = {}
+
+    local function AddChar(name)
+        if type(name) ~= "string" then return end
+        local c = name:match("^%s*(.-)%s*$")
+        if c ~= "" and c ~= "Alt" and not seen[c] then
+            seen[c] = true
+            table.insert(list, c)
+        end
+    end
+
+    if UnitName then
+        AddChar(UnitName("player"))
+    end
+
+    if type(market.ledger) == "table" then
+        for i = 1, #market.ledger do
+            AddChar(market.ledger[i].character)
+        end
+    end
+
+    if type(market.investments) == "table" then
+        for _, inv in pairs(market.investments) do
+            if type(inv) == "table" then
+                if type(inv.byChar) == "table" then
+                    for ch in pairs(inv.byChar) do AddChar(ch) end
+                end
+                if type(inv.holder) == "string" and inv.holder ~= "" then
+                    for part in inv.holder:gmatch("[^,]+") do
+                        AddChar(part)
+                    end
+                end
+            end
+        end
+    end
+
+    if type(market.charGroups) == "table" then
+        for _, members in pairs(market.charGroups) do
+            if type(members) == "table" then
+                for ch, flag in pairs(members) do
+                    if flag then AddChar(ch) end
+                end
+            end
+        end
+    end
+
+    table.sort(list, function(a, b) return a:lower() < b:lower() end)
+    return list
+end
+
+function DB:BuildCharacterFilterSet(charFilter)
+    if type(charFilter) ~= "string" or charFilter == "" or charFilter == "ALL" then
+        return nil
+    end
+
+    if charFilter:sub(1, 5) == "CHAR:" then
+        local ch = charFilter:sub(6)
+        if ch ~= "" then
+            return { [ch:lower()] = true }
+        end
+        return nil
+    elseif charFilter:sub(1, 6) == "GROUP:" then
+        local gName = charFilter:sub(7)
+        local groups = self:GetCharacterGroups()
+        local members = groups[gName]
+        if type(members) == "table" then
+            local set = {}
+            local any = false
+            for ch, flag in pairs(members) do
+                if flag and type(ch) == "string" and ch ~= "" then
+                    set[ch:lower()] = true
+                    any = true
+                end
+            end
+            if any then return set end
+        end
+        return {} -- Group exists/deleted with 0 members -> matches nothing
+    end
+
+    -- Allow passing raw character name directly
+    return { [charFilter:lower()] = true }
+end
+
+function DB:MatchesCharacterFilter(charName, filterSet)
+    if not filterSet then return true end
+    if type(charName) ~= "string" or charName == "" then return false end
+    return filterSet[charName:lower()] == true
+end
+
+function DB:GetCharacterFilterOptions()
+    local opts = {
+        { value = "ALL", label = "All Characters" },
+    }
+    local groups = self:GetCharacterGroups()
+    local gNames = {}
+    for gName in pairs(groups) do
+        table.insert(gNames, gName)
+    end
+    table.sort(gNames, function(a, b) return a:lower() < b:lower() end)
+    for i = 1, #gNames do
+        table.insert(opts, { value = "GROUP:" .. gNames[i], label = "[Grp] " .. gNames[i] })
+    end
+
+    local chars = self:GetKnownCharacters()
+    for i = 1, #chars do
+        table.insert(opts, { value = "CHAR:" .. chars[i], label = chars[i] })
+    end
+    return opts
+end
+
+-- Returns an investment position filtered by character or character group (nil if no match)
+function DB:GetInvestmentView(itemID, charFilter)
+    local inv = self:GetInvestment(itemID)
+    if type(inv) ~= "table" then return nil end
+
+    local filterSet = self:BuildCharacterFilterSet(charFilter)
+    if not filterSet then
+        return inv
+    end
+
+    if type(inv.byChar) == "table" then
+        local qty, totalCost, realized = 0, 0, 0
+        local holders = {}
+        local matchedAny = false
+        for ch, cd in pairs(inv.byChar) do
+            if filterSet[ch:lower()] then
+                matchedAny = true
+                qty = qty + (cd.qty or 0)
+                totalCost = totalCost + (cd.totalCost or ((cd.qty or 0) * (cd.avgCost or 0)))
+                realized = realized + (cd.realizedProfit or 0)
+                if (cd.qty or 0) > 0 or (cd.realizedProfit or 0) ~= 0 then
+                    table.insert(holders, ch)
+                end
+            end
+        end
+        if not matchedAny then return nil end
+        table.sort(holders)
+        local avgCost = (qty > 0) and math.floor((totalCost / qty) + 0.5) or (inv.avgCost or 0)
+        return {
+            qty            = qty,
+            avgCost        = avgCost,
+            totalCost      = totalCost,
+            realizedProfit = realized,
+            holder         = (#holders > 0) and table.concat(holders, ", ") or (inv.holder or "Alt"),
+            name           = inv.name,
+            icon           = inv.icon,
+            quality        = inv.quality,
+            updatedAt      = inv.updatedAt,
+        }
+    end
+
+    -- Fallback for legacy pre-Ledger investments without byChar
+    if type(inv.holder) == "string" and inv.holder ~= "" then
+        for part in inv.holder:gmatch("[^,]+") do
+            local clean = part:match("^%s*(.-)%s*$")
+            if clean ~= "" and filterSet[clean:lower()] then
+                return inv
+            end
+        end
+    end
+    return nil
+end
+
+function DB:GetPortfolioSummary(charFilter)
     local market = self:GetActiveMarket()
     local investments = market.investments or {}
     local cutRate = (NS.Analytics and NS.Analytics.GetAHCutRate()) or 0.05
@@ -585,20 +818,23 @@ function DB:GetPortfolioSummary()
     local estNetValue = 0
     local realizedProfit = 0
 
-    for itemID, inv in pairs(investments) do
-        realizedProfit = realizedProfit + (inv.realizedProfit or 0)
-        if inv.qty and inv.qty > 0 then
-            activePositions = activePositions + 1
-            totalUnits = totalUnits + inv.qty
-            local cost = inv.totalCost or (inv.qty * (inv.avgCost or 0))
-            totalInvested = totalInvested + cost
+    for itemID in pairs(investments) do
+        local inv = self:GetInvestmentView(itemID, charFilter)
+        if inv then
+            realizedProfit = realizedProfit + (inv.realizedProfit or 0)
+            if inv.qty and inv.qty > 0 then
+                activePositions = activePositions + 1
+                totalUnits = totalUnits + inv.qty
+                local cost = inv.totalCost or (inv.qty * (inv.avgCost or 0))
+                totalInvested = totalInvested + cost
 
-            local hist = market.history and market.history[itemID] or nil
-            local latest = hist and NS.Analytics and NS.Analytics.GetLatestPoint(hist) or nil
-            if latest and latest.min and latest.min > 0 then
-                estNetValue = estNetValue + math.floor((inv.qty * latest.min) * (1 - cutRate) + 0.5)
-            else
-                estNetValue = estNetValue + cost
+                local hist = market.history and market.history[itemID] or nil
+                local latest = hist and NS.Analytics and NS.Analytics.GetLatestPoint(hist) or nil
+                if latest and latest.min and latest.min > 0 then
+                    estNetValue = estNetValue + math.floor((inv.qty * latest.min) * (1 - cutRate) + 0.5)
+                else
+                    estNetValue = estNetValue + cost
+                end
             end
         end
     end
@@ -721,7 +957,7 @@ function DB:RecordLedgerBuy(itemID, qty, totalCostCopper, meta)
     local unitPrice = math.max(1, math.floor((totalCostCopper / qty) + 0.5))
     local name, icon, quality = ResolveLedgerItemMeta(market, itemID, meta)
 
-    -- Auto-update Inventory (weighted average cost basis) unless caller already updated it
+    -- Auto-update Inventory (weighted average cost basis + per-character breakdown)
     if itemID and itemID > 0 and not meta.skipInventory then
         local existing = market.investments[itemID]
         if not existing then
@@ -731,6 +967,14 @@ function DB:RecordLedgerBuy(itemID, qty, totalCostCopper, meta)
                 totalCost      = totalCostCopper,
                 realizedProfit = 0,
                 holder         = character,
+                byChar         = {
+                    [character] = {
+                        qty            = qty,
+                        avgCost        = unitPrice,
+                        totalCost      = totalCostCopper,
+                        realizedProfit = 0,
+                    },
+                },
                 name           = name,
                 icon           = icon,
                 quality        = quality,
@@ -750,6 +994,22 @@ function DB:RecordLedgerBuy(itemID, qty, totalCostCopper, meta)
             existing.name      = name
             existing.icon      = icon
             existing.quality   = quality
+            if type(existing.byChar) ~= "table" then existing.byChar = {} end
+            local cb = existing.byChar[character]
+            if not cb then
+                existing.byChar[character] = {
+                    qty            = qty,
+                    avgCost        = unitPrice,
+                    totalCost      = totalCostCopper,
+                    realizedProfit = 0,
+                }
+            else
+                local cq = (cb.qty or 0) + qty
+                local ct = (cb.totalCost or ((cb.qty or 0) * (cb.avgCost or 0))) + totalCostCopper
+                cb.qty       = cq
+                cb.totalCost = ct
+                cb.avgCost   = (cq > 0) and math.floor((ct / cq) + 0.5) or unitPrice
+            end
             if character and character ~= "" then
                 if existing.holder and existing.holder ~= "" and not existing.holder:find(character, 1, true) then
                     existing.holder = existing.holder .. ", " .. character
@@ -841,6 +1101,32 @@ function DB:RecordLedgerSale(itemID, qty, grossCopper, ahCutCopper, meta)
             inv.lastSellTs = now
             inv.updatedAt = now
 
+            -- Update per-character breakdown (prefer selling char's stock first, then fallback to remaining pool)
+            if type(inv.byChar) == "table" then
+                local cb = inv.byChar[character]
+                if cb and (cb.qty or 0) > 0 then
+                    local cTake = math.min(matchedQty, cb.qty)
+                    cb.qty = cb.qty - cTake
+                    cb.totalCost = cb.qty * (cb.avgCost or inv.avgCost or 0)
+                    cb.realizedProfit = (cb.realizedProfit or 0) + matchedProfit
+                else
+                    if not cb then
+                        cb = { qty = 0, avgCost = inv.avgCost or 0, totalCost = 0, realizedProfit = 0 }
+                        inv.byChar[character] = cb
+                    end
+                    cb.realizedProfit = (cb.realizedProfit or 0) + matchedProfit
+                    local rem = matchedQty
+                    for ch, other in pairs(inv.byChar) do
+                        if ch ~= character and rem > 0 and (other.qty or 0) > 0 then
+                            local take = math.min(rem, other.qty)
+                            other.qty = other.qty - take
+                            other.totalCost = other.qty * (other.avgCost or inv.avgCost or 0)
+                            rem = rem - take
+                        end
+                    end
+                end
+            end
+
             profit = matchedProfit
             roiPct = (costBasis > 0) and ((profit / costBasis) * 100) or nil
             matchedState = (matchedQty == qty) and "FULL" or "PARTIAL"
@@ -902,6 +1188,7 @@ function DB:GetLedgerEntries(opts)
     end
 
     local typeFilter = opts.typeFilter or "ALL"
+    local charFilterSet = self:BuildCharacterFilterSet(opts.charFilter)
     local searchQ = (type(opts.search) == "string") and opts.search:lower():match("^%s*(.-)%s*$") or ""
 
     for i = #ledger, 1, -1 do
@@ -911,6 +1198,9 @@ function DB:GetLedgerEntries(opts)
             ok = false
         end
         if ok and typeFilter ~= "ALL" and e.type ~= typeFilter then
+            ok = false
+        end
+        if ok and charFilterSet and not self:MatchesCharacterFilter(e.character, charFilterSet) then
             ok = false
         end
         if ok and searchQ ~= "" then
@@ -929,8 +1219,8 @@ function DB:GetLedgerEntries(opts)
     return out
 end
 
-function DB:GetLedgerSummary(days, nowTs)
-    local entries = self:GetLedgerEntries({ days = days, nowTs = nowTs })
+function DB:GetLedgerSummary(days, nowTs, charFilter)
+    local entries = self:GetLedgerEntries({ days = days, nowTs = nowTs, charFilter = charFilter })
     local totalBought = 0
     local totalSoldGross = 0
     local totalSoldNet = 0
@@ -973,6 +1263,392 @@ function DB:GetLedgerSummary(days, nowTs)
         matchedSellCount = matchedSellCount,
         totalCount       = #entries,
     }
+end
+
+-- Rolls up all Ledger transactions (and open Inventory positions) into ONE summary row per item
+-- so you can immediately see whether you are making or losing gold on each item overall.
+function DB:GetItemProfitSummaries(opts)
+    opts = opts or {}
+    local market = self:GetActiveMarket()
+    local entries = self:GetLedgerEntries({ days = opts.days, nowTs = opts.nowTs, charFilter = opts.charFilter })
+    local investments = market.investments or {}
+    local cutRate = (NS.Analytics and NS.Analytics.GetAHCutRate()) or 0.05
+    local searchQ = (type(opts.search) == "string") and opts.search:lower():match("^%s*(.-)%s*$") or ""
+
+    local byKey = {}
+
+    local function GetOrCreateBucket(itemID, name, icon, quality)
+        local key = (itemID and itemID > 0) and itemID or ("NAME:" .. tostring(name or "Unknown"):lower())
+        local b = byKey[key]
+        if not b then
+            local resolvedName, resolvedIcon, resolvedQual = ResolveLedgerItemMeta(market, itemID, {
+                name    = name,
+                icon    = icon,
+                quality = quality,
+            })
+            b = {
+                key              = key,
+                itemID           = (itemID and itemID > 0) and itemID or nil,
+                name             = resolvedName,
+                icon             = resolvedIcon,
+                quality          = resolvedQual,
+                buyCount         = 0,
+                buyQty           = 0,
+                buyTotal         = 0,
+                sellCount        = 0,
+                sellQty          = 0,
+                sellGross        = 0,
+                sellNet          = 0,
+                sellFees         = 0,
+                matchedProfit    = 0,
+                matchedCost      = 0,
+                matchedSellCount = 0,
+                untrackedSellNet = 0,
+                onHandQty        = 0,
+                onHandCost       = 0,
+                onHandNetVal     = 0,
+                unrealizedPnL    = 0,
+                lastTs           = 0,
+            }
+            byKey[key] = b
+        end
+        return b
+    end
+
+    -- 1. Aggregate every Ledger transaction in the selected timeframe
+    for i = 1, #entries do
+        local e = entries[i]
+        local b = GetOrCreateBucket(e.itemID, e.name, e.icon, e.quality)
+        if (e.ts or 0) > b.lastTs then
+            b.lastTs = e.ts or 0
+        end
+        if e.type == "BUY" then
+            b.buyCount = b.buyCount + 1
+            b.buyQty   = b.buyQty + (e.qty or 0)
+            b.buyTotal = b.buyTotal + (e.netTotal or e.gross or 0)
+        elseif e.type == "SELL" then
+            b.sellCount = b.sellCount + 1
+            b.sellQty   = b.sellQty + (e.qty or 0)
+            b.sellGross = b.sellGross + (e.gross or 0)
+            b.sellNet   = b.sellNet + (e.netTotal or 0)
+            b.sellFees  = b.sellFees + (e.ahCut or 0)
+            if e.profit ~= nil then
+                b.matchedProfit    = b.matchedProfit + e.profit
+                b.matchedCost      = b.matchedCost + (e.costBasis or 0)
+                b.matchedSellCount = b.matchedSellCount + 1
+            else
+                b.untrackedSellNet = b.untrackedSellNet + (e.netTotal or 0)
+            end
+        end
+    end
+
+    -- 2. Attach open Inventory positions (filtered by charFilter when selected)
+    for itemID in pairs(investments) do
+        local inv = self:GetInvestmentView(itemID, opts.charFilter)
+        if type(inv) == "table" and ((inv.qty or 0) > 0 or (inv.realizedProfit or 0) ~= 0) then
+            local alreadyPresent = (byKey[itemID] ~= nil)
+            if alreadyPresent or (opts.days == nil) then
+                local b = GetOrCreateBucket(itemID, inv.name, inv.icon, inv.quality)
+                local qty = inv.qty or 0
+                local cost = inv.totalCost or (qty * (inv.avgCost or 0))
+                local hist = market.history and market.history[itemID] or nil
+                local latest = hist and NS.Analytics and NS.Analytics.GetLatestPoint(hist) or nil
+                local mktPrice = (latest and latest.min and latest.min > 0) and latest.min or nil
+                local netVal = (qty > 0 and mktPrice) and math.floor((qty * mktPrice) * (1 - cutRate) + 0.5) or cost
+
+                b.onHandQty     = qty
+                b.onHandCost    = cost
+                b.onHandNetVal  = netVal
+                b.unrealizedPnL = (qty > 0) and (netVal - cost) or 0
+                if (inv.updatedAt or 0) > b.lastTs then
+                    b.lastTs = inv.updatedAt or 0
+                end
+                -- If item had pre-Ledger manual realizedProfit/cost with no ledger rows, reflect it cleanly in All Time
+                if opts.days == nil and b.buyCount == 0 and b.sellCount == 0 then
+                    b.buyQty = qty
+                    b.buyTotal = cost
+                    if (inv.realizedProfit or 0) ~= 0 then
+                        b.matchedProfit = inv.realizedProfit
+                        b.matchedSellCount = 1
+                    end
+                end
+            end
+        end
+    end
+
+    -- 3. Finalize per-item P&L metrics & filter by search
+    local list = {}
+    local totals = {
+        itemCount     = 0,
+        winners       = 0,
+        losers        = 0,
+        realizedPnL   = 0,
+        unrealizedPnL = 0,
+        totalPnL      = 0,
+        totalBought   = 0,
+        totalSoldNet  = 0,
+        bestItem      = nil,
+        worstItem     = nil,
+    }
+
+    for _, b in pairs(byKey) do
+        local keep = true
+        if searchQ ~= "" then
+            if not (b.name and b.name:lower():find(searchQ, 1, true)) then
+                keep = false
+            end
+        end
+        if keep then
+            b.avgBuy  = (b.buyQty > 0) and math.floor((b.buyTotal / b.buyQty) + 0.5) or 0
+            b.avgSell = (b.sellQty > 0) and math.floor((b.sellNet / b.sellQty) + 0.5) or 0
+
+            -- Realized P&L: matched flips profit + net revenue from farmed/crafted sales with no tracked buy cost
+            b.realizedPnL = b.matchedProfit + b.untrackedSellNet
+            b.isFarmedOnly = (b.buyQty == 0 and b.onHandQty == 0 and b.untrackedSellNet > 0)
+            b.realizedRoiPct = (b.matchedCost > 0) and ((b.matchedProfit / b.matchedCost) * 100) or nil
+
+            -- Total P&L (Incl. remaining open stock): Realized P&L + Unrealized P&L on stock currently held
+            b.totalPnL = b.realizedPnL + b.unrealizedPnL
+            local capitalBasis = math.max(b.buyTotal, b.matchedCost + b.onHandCost)
+            b.totalRoiPct = (capitalBasis > 0) and ((b.totalPnL / capitalBasis) * 100) or nil
+
+            totals.itemCount     = totals.itemCount + 1
+            totals.realizedPnL   = totals.realizedPnL + b.realizedPnL
+            totals.unrealizedPnL = totals.unrealizedPnL + b.unrealizedPnL
+            totals.totalPnL      = totals.totalPnL + b.totalPnL
+            totals.totalBought   = totals.totalBought + b.buyTotal
+            totals.totalSoldNet  = totals.totalSoldNet + b.sellNet
+
+            if b.totalPnL > 0 then
+                totals.winners = totals.winners + 1
+            elseif b.totalPnL < 0 then
+                totals.losers = totals.losers + 1
+            end
+
+            if not totals.bestItem or b.totalPnL > totals.bestItem.totalPnL then
+                totals.bestItem = b
+            end
+            if b.totalPnL < 0 and (not totals.worstItem or b.totalPnL < totals.worstItem.totalPnL) then
+                totals.worstItem = b
+            end
+
+            table.insert(list, b)
+        end
+    end
+
+    return list, totals
+end
+
+-- Replays Ledger transactions chronologically to rebuild exact Inventory qty,
+-- weighted average cost basis, per-character byChar splits, and SELL row P&L.
+-- When purgeDuplicateMailBuys is true, removes corrupted commodity BUY entries
+-- with source == "MAIL" (from earlier multi-stack mail attachment splitting).
+function DB:RebuildAccountingFromLedger(purgeDuplicateMailBuys, marketOverride, silent)
+    if demoModeActive and not marketOverride then
+        return { purged = 0, replayed = 0 }
+    end
+    local market = marketOverride or self:GetActiveMarket()
+    if type(market.ledger) ~= "table" then market.ledger = {} end
+    if type(market.investments) ~= "table" then market.investments = {} end
+
+    -- 1. Identify which itemIDs have live AH buys or are stackable commodities
+    local hasAHBuy = {}
+    for i = 1, #market.ledger do
+        local e = market.ledger[i]
+        if e.type == "BUY" and e.source == "AH" and e.itemID then
+            hasAHBuy[e.itemID] = true
+        end
+    end
+
+    local purged = 0
+    if purgeDuplicateMailBuys then
+        local cleaned = {}
+        for i = 1, #market.ledger do
+            local e = market.ledger[i]
+            local isDupMailCommodityBuy = false
+            if e.type == "BUY" and e.source == "MAIL" and e.itemID then
+                local maxStack = (C_Item and C_Item.GetItemMaxStackSizeByID and C_Item.GetItemMaxStackSizeByID(e.itemID)) or 1
+                if hasAHBuy[e.itemID] or maxStack > 1 then
+                    isDupMailCommodityBuy = true
+                end
+            end
+            if isDupMailCommodityBuy then
+                purged = purged + 1
+            else
+                table.insert(cleaned, e)
+            end
+        end
+        market.ledger = cleaned
+        market.pendingMailMatches = {}
+    end
+
+    -- 2. Sort ledger chronologically (ts asc, id asc)
+    table.sort(market.ledger, function(a, b)
+        local at, bt = a.ts or 0, b.ts or 0
+        if at ~= bt then return at < bt end
+        return (a.id or 0) < (b.id or 0)
+    end)
+
+    -- 3. Preserve any pre-Ledger manual investments (items with NO AH/MAIL buys in ledger)
+    local hasAutoActivity = {}
+    for i = 1, #market.ledger do
+        local e = market.ledger[i]
+        if e.itemID and (e.source == "AH" or e.source == "MAIL") then
+            hasAutoActivity[e.itemID] = true
+        end
+    end
+
+    local oldInvestments = market.investments
+    local rebuiltInv = {}
+    for itemID, oldInv in pairs(oldInvestments) do
+        if type(oldInv) == "table" and not hasAutoActivity[itemID] then
+            -- Keep pre-Ledger manual investment intact and ensure byChar exists for char filtering
+            if type(oldInv.byChar) ~= "table" then
+                local ch = (type(oldInv.holder) == "string" and oldInv.holder ~= "") and oldInv.holder:match("^%s*([^,]+)") or "Alt"
+                ch = ch:match("^%s*(.-)%s*$")
+                oldInv.byChar = {
+                    [ch] = {
+                        qty            = oldInv.qty or 0,
+                        avgCost        = oldInv.avgCost or 0,
+                        totalCost      = oldInv.totalCost or ((oldInv.qty or 0) * (oldInv.avgCost or 0)),
+                        realizedProfit = oldInv.realizedProfit or 0,
+                    },
+                }
+            end
+            rebuiltInv[itemID] = oldInv
+        end
+    end
+
+    -- 4. Replay every auto-tracked BUY and SELL chronologically
+    local replayed = 0
+    for i = 1, #market.ledger do
+        local e = market.ledger[i]
+        local itemID = tonumber(e.itemID)
+        if itemID and itemID > 0 and hasAutoActivity[itemID] then
+            local ch = (type(e.character) == "string" and e.character ~= "") and e.character or "Alt"
+            local qty = math.max(0, math.floor((tonumber(e.qty) or 0) + 0.5))
+
+            if e.type == "BUY" and qty > 0 then
+                local totalCost = math.floor((tonumber(e.netTotal or e.gross) or 0) + 0.5)
+                local unitPrice = (qty > 0) and math.max(1, math.floor((totalCost / qty) + 0.5)) or 0
+                local inv = rebuiltInv[itemID]
+                if not inv then
+                    inv = {
+                        qty            = qty,
+                        avgCost        = unitPrice,
+                        totalCost      = totalCost,
+                        realizedProfit = 0,
+                        holder         = ch,
+                        byChar         = {
+                            [ch] = {
+                                qty            = qty,
+                                avgCost        = unitPrice,
+                                totalCost      = totalCost,
+                                realizedProfit = 0,
+                            },
+                        },
+                        name           = e.name,
+                        icon           = e.icon,
+                        quality        = e.quality,
+                        notes          = (oldInvestments[itemID] and oldInvestments[itemID].notes) or "",
+                        source         = e.source or "AH",
+                        lastBuyTs      = e.ts or 0,
+                        updatedAt      = e.ts or 0,
+                    }
+                    rebuiltInv[itemID] = inv
+                else
+                    local newQty = (inv.qty or 0) + qty
+                    local newTotal = (inv.totalCost or 0) + totalCost
+                    inv.qty = newQty
+                    inv.totalCost = newTotal
+                    inv.avgCost = (newQty > 0) and math.floor((newTotal / newQty) + 0.5) or unitPrice
+                    if not inv.holder or inv.holder == "" then
+                        inv.holder = ch
+                    elseif not inv.holder:find(ch, 1, true) then
+                        inv.holder = inv.holder .. ", " .. ch
+                    end
+                    local cb = inv.byChar[ch]
+                    if not cb then
+                        inv.byChar[ch] = {
+                            qty            = qty,
+                            avgCost        = unitPrice,
+                            totalCost      = totalCost,
+                            realizedProfit = 0,
+                        }
+                    else
+                        local cq = (cb.qty or 0) + qty
+                        local ct = (cb.totalCost or 0) + totalCost
+                        cb.qty = cq
+                        cb.totalCost = ct
+                        cb.avgCost = (cq > 0) and math.floor((ct / cq) + 0.5) or unitPrice
+                    end
+                    inv.lastBuyTs = math.max(inv.lastBuyTs or 0, e.ts or 0)
+                    inv.updatedAt = math.max(inv.updatedAt or 0, e.ts or 0)
+                end
+                replayed = replayed + 1
+
+            elseif e.type == "SELL" and qty > 0 then
+                local netProceeds = math.floor((tonumber(e.netTotal) or 0) + 0.5)
+                local inv = rebuiltInv[itemID]
+                if inv and (inv.qty or 0) > 0 then
+                    local matchedQty = math.min(qty, inv.qty)
+                    local costBasis = matchedQty * (inv.avgCost or 0)
+                    local matchedNet = (matchedQty == qty) and netProceeds or math.floor((netProceeds * (matchedQty / qty)) + 0.5)
+                    local profit = matchedNet - costBasis
+
+                    inv.qty = inv.qty - matchedQty
+                    inv.totalCost = inv.qty * (inv.avgCost or 0)
+                    inv.realizedProfit = (inv.realizedProfit or 0) + profit
+                    inv.lastSellTs = math.max(inv.lastSellTs or 0, e.ts or 0)
+                    inv.updatedAt = math.max(inv.updatedAt or 0, e.ts or 0)
+
+                    local cb = inv.byChar[ch]
+                    if cb and (cb.qty or 0) > 0 then
+                        local cTake = math.min(matchedQty, cb.qty)
+                        cb.qty = cb.qty - cTake
+                        cb.totalCost = cb.qty * (cb.avgCost or inv.avgCost or 0)
+                        cb.realizedProfit = (cb.realizedProfit or 0) + profit
+                    else
+                        if not cb then
+                            cb = { qty = 0, avgCost = inv.avgCost or 0, totalCost = 0, realizedProfit = 0 }
+                            inv.byChar[ch] = cb
+                        end
+                        cb.realizedProfit = (cb.realizedProfit or 0) + profit
+                        local rem = matchedQty
+                        for otherCh, other in pairs(inv.byChar) do
+                            if otherCh ~= ch and rem > 0 and (other.qty or 0) > 0 then
+                                local take = math.min(rem, other.qty)
+                                other.qty = other.qty - take
+                                other.totalCost = other.qty * (other.avgCost or inv.avgCost or 0)
+                                rem = rem - take
+                            end
+                        end
+                    end
+
+                    e.matchedQty = matchedQty
+                    e.costBasis  = costBasis
+                    e.profit     = profit
+                    e.roiPct     = (costBasis > 0) and ((profit / costBasis) * 100) or nil
+                    e.matched    = (matchedQty == qty) and "FULL" or "PARTIAL"
+                else
+                    e.matchedQty = 0
+                    e.costBasis  = nil
+                    e.profit     = nil
+                    e.roiPct     = nil
+                    e.matched    = "UNTRACKED"
+                end
+                replayed = replayed + 1
+            end
+        end
+    end
+
+    -- Preserve manually cleared items that had 0 qty and no remaining ledger entries? No, only active rebuilt ones.
+    market.investments = rebuiltInv
+
+    if not silent then
+        NS:FireCallback("DATA_UPDATED", nil, "LEDGER_REBUILT")
+    end
+    return { purged = purged, replayed = replayed }
 end
 
 function DB:DeleteLedgerEntry(entryId, skipInventorySync)
@@ -1579,6 +2255,7 @@ function DB:RecordSnapshot(itemID, minPrice, avgPrice, maxPrice, totalQty, times
             wallQty   = orderBook.wallQty or 0,
             wallCost  = orderBook.wallCost or 0,
             nextPrice = orderBook.nextPrice or 0,
+            tiers     = orderBook.tiers,
             updatedAt = now,
         }
     end

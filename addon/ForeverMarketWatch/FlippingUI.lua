@@ -5,9 +5,11 @@
 --       - GREEN  : Price <= Buy Target (SNIPE / BUY NOW!)
 --       - YELLOW : Price in the middle between Buy and Sell targets
 --       - RED    : Price >= Sell Target (SELL NOW!)
---   * Auto-sorted by urgency (Green Buy snipes first -> Red Sell hits -> Yellow Mid).
---   * 1-click "Scan Targets" (fast scan of ONLY targeted items) and 1-click "Buy"
---     right on every card (jumps straight into Auctionator's Shopping tab).
+--   * Displays exact Under-Target Snipe quantity & total buyout cost (after AH scan),
+--     7D Volatility (Swing%), Volume / Liquidity tier, and Net Flip Spread (after 5% cut)
+--     so you can spot fast-moving quick flips at a glance.
+--   * 1-click "Scan Targets" (fast scan of ONLY targeted items) and 1-click "Snipe <N>"
+--     right on every card (jumps straight to Auctionator's Shopping tab + prints exact qty).
 
 local _, NS = ...
 
@@ -41,6 +43,13 @@ local ZONE_STYLES = {
     },
 }
 
+local FLIP_SORT_OPTS = {
+    { value = "priority", label = "Snipe Priority" },
+    { value = "swing",    label = "Volatility (7D)" },
+    { value = "volume",   label = "Volume (Fastest)" },
+    { value = "spread",   label = "Target Spread %" },
+}
+
 local function ClassifyTargetZone(latestMin, buyTarget, sellTarget)
     if not latestMin or latestMin <= 0 then
         return "MID", "NO DATA", 999
@@ -49,16 +58,15 @@ local function ClassifyTargetZone(latestMin, buyTarget, sellTarget)
     if buyTarget and buyTarget > 0 and latestMin <= buyTarget then
         local pct = ((latestMin - buyTarget) / buyTarget) * 100
         local badge = (pct <= -0.1) and string.format("BUY %.1f%%", pct) or "BUY HIT"
-        return "BUY", badge, pct -- More negative = deeper snipe, sorts first!
+        return "BUY", badge, pct
     end
 
     if sellTarget and sellTarget > 0 and latestMin >= sellTarget then
         local pct = ((latestMin - sellTarget) / sellTarget) * 100
         local badge = (pct >= 0.1) and string.format("SELL +%.1f%%", pct) or "SELL HIT"
-        return "SELL", badge, -pct -- Higher above sell target sorts first!
+        return "SELL", badge, -pct
     end
 
-    -- In the middle: show distance to whichever target is closer
     local distBuy = (buyTarget and buyTarget > 0) and (((latestMin - buyTarget) / buyTarget) * 100) or nil
     local distSell = (sellTarget and sellTarget > 0) and (((sellTarget - latestMin) / sellTarget) * 100) or nil
 
@@ -77,13 +85,31 @@ local function ClassifyTargetZone(latestMin, buyTarget, sellTarget)
     return "MID", "WATCH", 500
 end
 
+-- Public helper so top nav bar can show a live green BUY count badge on the Flipping tab!
+function FlippingUI.CountBuyHits()
+    local ids = NS.DB:GetTargetedItemIDs()
+    local hits = 0
+    for i = 1, #ids do
+        local entry = NS.DB:GetWatchItem(ids[i])
+        if entry and entry.buyTarget and entry.buyTarget > 0 then
+            local hist = NS.DB:GetItemHistory(ids[i])
+            local latest = hist and NS.Analytics and NS.Analytics.GetLatestPoint(hist) or nil
+            if latest and latest.min and latest.min > 0 and latest.min <= entry.buyTarget then
+                hits = hits + 1
+            end
+        end
+    end
+    return hits
+end
+
 function FlippingUI.Create(parent, onOpenItem, onEditTargets)
     local frame = CreateFrame("Frame", nil, parent)
     frame:SetAllPoints(parent)
     frame:Hide()
 
-    local zoneFilter = "ALL" -- "ALL", "BUY", "MID", "SELL"
-    local timeframe = "1D"   -- "1D", "7D"
+    local zoneFilter = "ALL"      -- "ALL", "BUY", "MID", "SELL"
+    local sortMode   = "priority" -- "priority", "swing", "volume", "spread"
+    local timeframe  = "1D"       -- "1D", "7D"
 
     ----------------------------------------------------------------------------
     -- 1. TOP QUICK-SNIPE CONTROL BAR
@@ -95,10 +121,10 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
 
     local filterBtns = {}
     local filterDefs = {
-        { id = "ALL",  label = "All",  w = 68 },
-        { id = "BUY",  label = "Buy",  w = 72 },
-        { id = "MID",  label = "Mid",  w = 72 },
-        { id = "SELL", label = "Sell", w = 72 },
+        { id = "ALL",  label = "All",  w = 64 },
+        { id = "BUY",  label = "Buy",  w = 68 },
+        { id = "MID",  label = "Mid",  w = 68 },
+        { id = "SELL", label = "Sell", w = 68 },
     }
     local prev = nil
     for i = 1, #filterDefs do
@@ -117,6 +143,14 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
         prev = b
     end
 
+    local sortDrop = NS.CreateDropdown(topBar, 128, 24, function(val)
+        sortMode = val or "priority"
+        frame:Refresh()
+    end)
+    sortDrop:SetPoint("LEFT", prev, "RIGHT", 10, 0)
+    sortDrop:SetOptions(FLIP_SORT_OPTS)
+    sortDrop:SetSelected(sortMode, false)
+
     local scanBtn = NS.CreateButton(topBar, "Scan Targets", 104, 24, true)
     scanBtn:SetPoint("RIGHT", topBar, "RIGHT", -8, 0)
     scanBtn:SetScript("OnClick", function()
@@ -128,26 +162,19 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
     end)
     frame._scanBtn = scanBtn
 
-    local tf7Btn = NS.CreateButton(topBar, "7D", 34, 24, false)
+    local tf7Btn = NS.CreateButton(topBar, "7D", 32, 24, false)
     tf7Btn:SetPoint("RIGHT", scanBtn, "LEFT", -8, 0)
     tf7Btn:SetScript("OnClick", function()
         timeframe = "7D"
         frame:Refresh()
     end)
 
-    local tf1Btn = NS.CreateButton(topBar, "1D", 34, 24, false)
+    local tf1Btn = NS.CreateButton(topBar, "1D", 32, 24, false)
     tf1Btn:SetPoint("RIGHT", tf7Btn, "LEFT", -3, 0)
     tf1Btn:SetScript("OnClick", function()
         timeframe = "1D"
         frame:Refresh()
     end)
-
-    local legendTxt = topBar:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    legendTxt:SetPoint("LEFT", prev, "RIGHT", 12, 0)
-    legendTxt:SetPoint("RIGHT", tf1Btn, "LEFT", -8, 0)
-    legendTxt:SetJustifyH("CENTER")
-    legendTxt:SetWordWrap(false)
-    legendTxt:SetText("|cFF22EB70Green: Buy|r  |  |cFFFFD100Yellow: Mid|r  |  |cFFFF4D4DRed: Sell|r")
 
     ----------------------------------------------------------------------------
     -- 2. FULL-HEIGHT SNIPE CARDS GRID
@@ -176,22 +203,28 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
     local function GetOrCreateCard(idx)
         if frame._cards[idx] then return frame._cards[idx] end
         local c = NS.CreatePanel(child, nil, NS.COLORS.BG_CARD, NS.COLORS.BORDER, true)
-        c:SetSize(232, 134)
+        c:SetSize(236, 154)
 
         -- Main clickable surface (opens full chart in Market & Charts)
         local clicker = CreateFrame("Button", nil, c)
         clicker:SetPoint("TOPLEFT", c, "TOPLEFT", 0, 0)
-        clicker:SetPoint("BOTTOMRIGHT", c, "BOTTOMRIGHT", 0, 26)
+        clicker:SetPoint("BOTTOMRIGHT", c, "BOTTOMRIGHT", 0, 28)
         local hl = clicker:CreateTexture(nil, "HIGHLIGHT")
         hl:SetAllPoints()
         hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
         hl:SetBlendMode("ADD")
-        hl:SetAlpha(0.18)
+        hl:SetAlpha(0.16)
         c.clicker = clicker
+
+        -- Row 1: Framed Icon + Item Name + Zone Badge
+        local iconBg = c:CreateTexture(nil, "BORDER")
+        iconBg:SetSize(26, 26)
+        iconBg:SetPoint("TOPLEFT", 8, -7)
+        iconBg:SetColorTexture(0.45, 0.36, 0.22, 0.9)
 
         local icon = c:CreateTexture(nil, "ARTWORK")
         icon:SetSize(24, 24)
-        icon:SetPoint("TOPLEFT", 8, -8)
+        icon:SetPoint("CENTER", iconBg, "CENTER", 0, 0)
         icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
         c.icon = icon
 
@@ -201,41 +234,57 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
         c.badgeTxt = badgeTxt
 
         local nameTxt = c:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        nameTxt:SetPoint("TOPLEFT", icon, "TOPRIGHT", 6, 0)
+        nameTxt:SetPoint("TOPLEFT", iconBg, "TOPRIGHT", 6, 0)
         nameTxt:SetPoint("RIGHT", badgeTxt, "LEFT", -4, 0)
         nameTxt:SetJustifyH("LEFT")
         nameTxt:SetWordWrap(false)
         c.nameTxt = nameTxt
 
+        -- Row 2: Live Price (left) + Under-Target Snipe Callout / Spread (right)
         local priceTxt = c:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        priceTxt:SetPoint("BOTTOMLEFT", icon, "BOTTOMRIGHT", 6, -1)
+        priceTxt:SetPoint("BOTTOMLEFT", iconBg, "BOTTOMRIGHT", 6, -1)
         priceTxt:SetJustifyH("LEFT")
         c.priceTxt = priceTxt
 
-        local qtyTxt = c:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        qtyTxt:SetPoint("BOTTOMRIGHT", c, "TOPRIGHT", -8, -32)
-        qtyTxt:SetJustifyH("RIGHT")
-        c.qtyTxt = qtyTxt
+        local snipeTxt = c:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        snipeTxt:SetPoint("BOTTOMRIGHT", c, "TOPRIGHT", -8, -33)
+        snipeTxt:SetJustifyH("RIGHT")
+        c.snipeTxt = snipeTxt
 
-        -- Color-coded target sparkline chart
+        -- Row 3: Color-coded target sparkline chart
         local spark = NS.Chart.CreateSparkline(c)
-        spark:SetPoint("TOPLEFT", c, "TOPLEFT", 8, -37)
-        spark:SetPoint("TOPRIGHT", c, "TOPRIGHT", -8, -37)
-        spark:SetHeight(64)
+        spark:SetPoint("TOPLEFT", c, "TOPLEFT", 8, -39)
+        spark:SetPoint("TOPRIGHT", c, "TOPRIGHT", -8, -39)
+        spark:SetHeight(56)
         c.spark = spark
 
-        -- Bottom Quick-Action Bar (Targets + 1-click Buy & Edit)
-        local buyBtn = NS.CreateButton(c, "Buy", 42, 20, true)
+        -- Row 4: Volatility (7D Swing%) + Volume / Liquidity + Dip Wall Strip
+        local metricsTxt = c:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        metricsTxt:SetPoint("TOPLEFT", spark, "BOTTOMLEFT", 1, -5)
+        metricsTxt:SetPoint("TOPRIGHT", spark, "BOTTOMRIGHT", -1, -5)
+        metricsTxt:SetJustifyH("LEFT")
+        metricsTxt:SetWordWrap(false)
+        c.metricsTxt = metricsTxt
+
+        -- Subtle divider above action bar
+        local div = c:CreateTexture(nil, "ARTWORK")
+        div:SetPoint("BOTTOMLEFT", c, "BOTTOMLEFT", 6, 29)
+        div:SetPoint("BOTTOMRIGHT", c, "BOTTOMRIGHT", -6, 29)
+        div:SetHeight(1)
+        div:SetColorTexture(0.45, 0.38, 0.25, 0.35)
+
+        -- Row 5: Bottom Quick-Action Bar (Targets + Edit + 1-click Snipe/Buy)
+        local buyBtn = NS.CreateButton(c, "Snipe", 68, 21, true)
         buyBtn:SetPoint("BOTTOMRIGHT", c, "BOTTOMRIGHT", -6, 5)
         c.buyBtn = buyBtn
 
-        local editBtn = NS.CreateButton(c, "Edit", 38, 20, false)
+        local editBtn = NS.CreateButton(c, "Edit", 36, 21, false)
         editBtn:SetPoint("RIGHT", buyBtn, "LEFT", -4, 0)
         c.editBtn = editBtn
 
         local targetsTxt = c:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         targetsTxt:SetPoint("BOTTOMLEFT", c, "BOTTOMLEFT", 8, 9)
-        targetsTxt:SetPoint("RIGHT", editBtn, "LEFT", -6, 0)
+        targetsTxt:SetPoint("RIGHT", editBtn, "LEFT", -4, 0)
         targetsTxt:SetJustifyH("LEFT")
         targetsTxt:SetWordWrap(false)
         c.targetsTxt = targetsTxt
@@ -268,6 +317,7 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
 
         -- 2. Gather ALL watchlist items that have Buy and/or Sell targets set
         local targetedIDs = NS.DB:GetTargetedItemIDs()
+        local cutRate = (NS.Analytics and NS.Analytics.GetAHCutRate()) or 0.05
         local counts = { ALL = 0, BUY = 0, MID = 0, SELL = 0 }
         local items = {}
 
@@ -279,26 +329,35 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
                 local sum = NS.Analytics.GetItemSummary(entry, hist, timeframe)
                 local dayCtx = (timeframe == "1D") and NS.Analytics.GetDayContext(hist) or nil
                 local zone, badge, sortKey = ClassifyTargetZone(sum.latestMin, entry.buyTarget, entry.sellTarget)
+                local underDepth = (zone == "BUY" and NS.Analytics.ComputeUnderTargetDepth)
+                    and NS.Analytics.ComputeUnderTargetDepth(hist, entry.buyTarget) or nil
+
+                local targetSpreadPct = nil
+                if entry.buyTarget and entry.buyTarget > 0 and entry.sellTarget and entry.sellTarget > 0 then
+                    local netSell = entry.sellTarget * (1 - cutRate)
+                    targetSpreadPct = ((netSell - entry.buyTarget) / entry.buyTarget) * 100
+                end
 
                 counts.ALL = counts.ALL + 1
                 counts[zone] = (counts[zone] or 0) + 1
 
                 if zoneFilter == "ALL" or zoneFilter == zone then
                     table.insert(items, {
-                        itemID  = itemID,
-                        entry   = entry,
-                        sum     = sum,
-                        dayCtx  = dayCtx,
-                        zone    = zone,
-                        badge   = badge,
-                        sortKey = sortKey,
-                        style   = ZONE_STYLES[zone] or ZONE_STYLES.MID,
+                        itemID          = itemID,
+                        entry           = entry,
+                        sum             = sum,
+                        dayCtx          = dayCtx,
+                        zone            = zone,
+                        badge           = badge,
+                        sortKey         = sortKey,
+                        underDepth      = underDepth,
+                        targetSpreadPct = targetSpreadPct,
+                        style           = ZONE_STYLES[zone] or ZONE_STYLES.MID,
                     })
                 end
             end
         end
 
-        -- Update top filter pill labels with live counts
         filterBtns.ALL:SetTextLabel(string.format("All (%d)", counts.ALL))
         filterBtns.BUY:SetTextLabel(string.format("|cFF22EB70Buy (%d)|r", counts.BUY))
         filterBtns.MID:SetTextLabel(string.format("|cFFFFD100Mid (%d)|r", counts.MID))
@@ -307,8 +366,20 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
             btn:SetActiveState(id == zoneFilter)
         end
 
-        -- Auto-sort by urgency: Green BUY snipes first -> Red SELL targets -> Yellow MID (closest first)
         table.sort(items, function(a, b)
+            if sortMode == "swing" then
+                local as = a.sum.swing7dPct or -1
+                local bs = b.sum.swing7dPct or -1
+                if as ~= bs then return as > bs end
+            elseif sortMode == "volume" then
+                local av = a.sum.latestQty or 0
+                local bv = b.sum.latestQty or 0
+                if av ~= bv then return av > bv end
+            elseif sortMode == "spread" then
+                local ap = a.targetSpreadPct or -999
+                local bp = b.targetSpreadPct or -999
+                if ap ~= bp then return ap > bp end
+            end
             if a.style.rank ~= b.style.rank then
                 return a.style.rank < b.style.rank
             end
@@ -318,7 +389,6 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
             return (a.entry.name or ""):lower() < (b.entry.name or ""):lower()
         end)
 
-        -- Empty states
         emptyTxt:SetShown(#items == 0)
         if #items == 0 then
             if counts.ALL == 0 then
@@ -328,19 +398,20 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
             end
         end
 
-        -- 3. Render color-coded card grid
+        -- 3. Render upgraded quick-snipe cards
         local viewW = math.max(360, scroll:GetWidth() or 720)
         child:SetWidth(viewW)
-        local cols = (viewW >= 620) and 3 or 2
+        local cols = (viewW >= 640) and 3 or 2
         local gap = 8
         local cardW = math.floor((viewW - gap * (cols - 1)) / cols)
-        local cardH = 134
+        local cardH = 154
 
         for i = 1, #items do
             local d = items[i]
             local entry = d.entry
             local sum = d.sum
             local st = d.style
+            local depth = d.underDepth
             local card = GetOrCreateCard(i)
 
             local r = math.floor((i - 1) / cols)
@@ -349,7 +420,6 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
             card:SetPoint("TOPLEFT", child, "TOPLEFT", c * (cardW + gap), -(r * (cardH + gap)))
             card:SetSize(cardW, cardH)
 
-            -- Whole-card traffic-light tint & border!
             if card.SetBackdropColor then
                 card:SetBackdropColor(st.cardBg[1], st.cardBg[2], st.cardBg[3], st.cardBg[4])
             end
@@ -365,10 +435,27 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
             card.badgeTxt:SetText(st.textHex .. d.badge .. "|r")
             card.priceTxt:SetText(sum.latestMin and NS.FormatMoney(sum.latestMin, true) or "|cFF998C78No Data|r")
 
-            if sum.investQty and sum.investQty > 0 then
-                card.qtyTxt:SetText(string.format("|cFFFFD100Inv:%d|r  AH:%d", sum.investQty, sum.latestQty or 0))
+            -- Right-side Row 2 Callout: Under-Target Snipe Qty+Cost (BUY) | Held P&L (SELL) | Net Spread (MID)
+            if d.zone == "BUY" then
+                if depth and depth.qty and depth.qty > 0 then
+                    local prefix = depth.exact and "" or "~"
+                    card.snipeTxt:SetText(string.format("|cFF22EB70%s%dx <= Buy (%s)|r", prefix, depth.qty, NS.FormatMoney(depth.cost or 0, true)))
+                elseif sum.wallQty and sum.wallQty > 0 then
+                    card.snipeTxt:SetText(string.format("|cFF22EB70Wall: %d (%s)|r", sum.wallQty, NS.FormatMoney(sum.wallCost or 0, true)))
+                else
+                    card.snipeTxt:SetText("|cFF22EB70Scan for exact qty|r")
+                end
+            elseif d.zone == "SELL" and sum.investQty and sum.investQty > 0 then
+                local pClr = (sum.investUnrealizedPnL and sum.investUnrealizedPnL >= 0) and "|cFF38D972+" or "|cFFF55954"
+                card.snipeTxt:SetText(string.format("|cFFFFD100Inv:%d|r %s%s|r",
+                    sum.investQty, pClr, sum.investUnrealizedPnL and NS.FormatMoney(sum.investUnrealizedPnL, true) or ""))
+            elseif d.targetSpreadPct ~= nil then
+                local spClr = (d.targetSpreadPct >= 15) and "|cFF38D972" or ((d.targetSpreadPct >= 5) and "|cFFFFD100" or "|cFFF55954")
+                card.snipeTxt:SetText(string.format("Spread: %s%+.0f%% net|r", spClr, d.targetSpreadPct))
+            elseif sum.investQty and sum.investQty > 0 then
+                card.snipeTxt:SetText(string.format("|cFFFFD100Holding: %d|r", sum.investQty))
             else
-                card.qtyTxt:SetText(string.format("AH Qty: %d", sum.latestQty or 0))
+                card.snipeTxt:SetText("")
             end
 
             -- Render the entire sparkline chart in GREEN (Buy), YELLOW (Mid), or RED (Sell)
@@ -383,7 +470,21 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
                 lineWidth    = 2.1,
             })
 
-            -- Bottom target legend
+            -- Row 4: Volatility (7D Swing%) + Volume/Liquidity + Dip Wall
+            local swingStr
+            if sum.swing7dPct ~= nil then
+                local swClr = (sum.swing7dPct >= 20) and "|cFF38D972" or ((sum.swing7dPct >= 10) and "|cFFFFD100" or "|cFFB0A48E")
+                swingStr = string.format("Swing: %s%.0f%%|r", swClr, sum.swing7dPct)
+            else
+                swingStr = "Swing: --"
+            end
+
+            local liqClr = (sum.liquidityTier == "High") and "|cFF38D972" or ((sum.liquidityTier == "Med") and "|cFFFFD100" or "|cFFF55954")
+            local volStr = string.format("Vol: %d (%s%s|r)", sum.latestQty or 0, liqClr, sum.liquidityTier or "Low")
+            local wallStr = (sum.wallQty and sum.wallQty > 0) and ("  |  Wall: " .. tostring(sum.wallQty)) or ""
+            card.metricsTxt:SetText(swingStr .. "  |  " .. volStr .. wallStr)
+
+            -- Row 5: Bottom Targets + Snipe / Buy action button
             local tParts = {}
             if entry.buyTarget and entry.buyTarget > 0 then
                 table.insert(tParts, "|cFF22EB70B:|r" .. NS.FormatMoney(entry.buyTarget, true))
@@ -393,11 +494,28 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
             end
             card.targetsTxt:SetText(table.concat(tParts, " "))
 
+            local buyLabel = "Buy"
+            if d.zone == "BUY" then
+                if depth and depth.qty and depth.qty > 0 then
+                    buyLabel = "Snipe " .. tostring(depth.qty)
+                else
+                    buyLabel = "Snipe"
+                end
+            end
+            card.buyBtn:SetTextLabel(buyLabel)
             card.buyBtn:SetEnabledState(ahOpen and not isDemo)
             card.buyBtn:SetActiveState(d.zone == "BUY")
             card.buyBtn:SetScript("OnClick", function()
                 if NS.Scanner and NS.Scanner.JumpToItemInAH then
-                    NS.Scanner:JumpToItemInAH(d.itemID)
+                    local snipeInfo = nil
+                    if d.zone == "BUY" then
+                        snipeInfo = {
+                            buyTarget = entry.buyTarget,
+                            underQty  = depth and depth.qty or nil,
+                            underCost = depth and depth.cost or nil,
+                        }
+                    end
+                    NS.Scanner:JumpToItemInAH(d.itemID, snipeInfo)
                 end
             end)
 

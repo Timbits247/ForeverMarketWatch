@@ -466,6 +466,42 @@ function Analytics.CheckPeriodLows(itemHist, nowTs)
     }
 end
 
+-- Computes how many units (and total copper) are listed at or below buyTarget.
+-- Uses exact live order-book tiers from AH scans when available; falls back to Dip Wall estimate.
+function Analytics.ComputeUnderTargetDepth(itemHist, buyTarget)
+    if type(itemHist) ~= "table" or not buyTarget or buyTarget <= 0 then
+        return nil
+    end
+    local ob = itemHist.orderBook
+    if type(ob) ~= "table" then
+        return nil
+    end
+
+    if type(ob.tiers) == "table" and #ob.tiers > 0 then
+        local qty, cost = 0, 0
+        for i = 1, #ob.tiers do
+            local t = ob.tiers[i]
+            if t[1] and t[1] <= buyTarget then
+                qty = qty + (t[2] or 0)
+                cost = cost + (t[1] * (t[2] or 0))
+            else
+                break
+            end
+        end
+        return { qty = qty, cost = cost, exact = true }
+    end
+
+    local latest = Analytics.GetLatestPoint(itemHist)
+    if latest and latest.min and latest.min > 0 and latest.min <= buyTarget and ob.wallQty and ob.wallQty > 0 then
+        local wallCeil = math.ceil(latest.min * 1.10)
+        if buyTarget >= wallCeil then
+            return { qty = ob.wallQty, cost = ob.wallCost or (ob.wallQty * latest.min), exact = false, atLeast = true }
+        end
+        return { qty = nil, wallQty = ob.wallQty, wallCost = ob.wallCost, exact = false }
+    end
+    return nil
+end
+
 function Analytics.GetItemSummary(watchEntry, itemHist, timeframe, nowTs)
     local now = nowTs or (time and time()) or 0
     local latest = Analytics.GetLatestPoint(itemHist)

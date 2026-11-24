@@ -18,7 +18,7 @@ local function FormatLedgerTimestamp(ts)
     return tostring(ts)
 end
 
-function LedgerUI.Create(parent, onOpenItem)
+function LedgerUI.Create(parent, onOpenItem, onOpenCharGroups)
     local frame = CreateFrame("Frame", nil, parent)
     frame:SetAllPoints(parent)
     frame:Hide()
@@ -81,19 +81,19 @@ function LedgerUI.Create(parent, onOpenItem)
 
     local tfBtns = {}
     local tfDefs = {
-        { key = "TODAY", days = 1,   label = "Today", w = 52 },
-        { key = "7D",    days = 7,   label = "7D",    w = 34 },
-        { key = "30D",   days = 30,  label = "30D",   w = 38 },
-        { key = "ALL",   days = nil, label = "All",   w = 36 },
+        { key = "TODAY", days = 1,   label = "Today", w = 46 },
+        { key = "7D",    days = 7,   label = "7D",    w = 30 },
+        { key = "30D",   days = 30,  label = "30D",   w = 34 },
+        { key = "ALL",   days = nil, label = "All",   w = 30 },
     }
     local prev = nil
     for i = 1, #tfDefs do
         local def = tfDefs[i]
         local b = NS.CreateButton(ctrlBar, def.label, def.w, 22, false)
         if not prev then
-            b:SetPoint("LEFT", ctrlBar, "LEFT", 8, 0)
+            b:SetPoint("LEFT", ctrlBar, "LEFT", 6, 0)
         else
-            b:SetPoint("LEFT", prev, "RIGHT", 3, 0)
+            b:SetPoint("LEFT", prev, "RIGHT", 2, 0)
         end
         b:SetScript("OnClick", function()
             selectedDays = def.days
@@ -105,14 +105,14 @@ function LedgerUI.Create(parent, onOpenItem)
 
     local typeBtns = {}
     local typeDefs = {
-        { id = "ALL",  label = "All",   w = 36 },
-        { id = "BUY",  label = "Buys",  w = 46 },
-        { id = "SELL", label = "Sales", w = 48 },
+        { id = "ALL",  label = "All",   w = 30 },
+        { id = "BUY",  label = "Buys",  w = 40 },
+        { id = "SELL", label = "Sales", w = 42 },
     }
     for i = 1, #typeDefs do
         local def = typeDefs[i]
         local b = NS.CreateButton(ctrlBar, def.label, def.w, 22, false)
-        b:SetPoint("LEFT", prev, "RIGHT", (i == 1) and 12 or 3, 0)
+        b:SetPoint("LEFT", prev, "RIGHT", (i == 1) and 8 or 2, 0)
         b:SetScript("OnClick", function()
             selectedType = def.id
             frame:Refresh()
@@ -121,24 +121,37 @@ function LedgerUI.Create(parent, onOpenItem)
         prev = b
     end
 
-    local searchBox, searchEB = NS.CreateEditBox(ctrlBar, 148, 22, "Filter item / alt...")
-    searchBox:SetPoint("LEFT", prev, "RIGHT", 12, 0)
+    local searchBox, searchEB = NS.CreateEditBox(ctrlBar, 102, 22, "Filter item...")
+    searchBox:SetPoint("LEFT", prev, "RIGHT", 8, 0)
     searchEB:SetScript("OnTextChanged", function(self)
         searchText = (self:GetText() or ""):lower():match("^%s*(.-)%s*$")
         frame:Refresh()
     end)
     searchEB:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
 
-    local autoTrackBtn = NS.CreateButton(ctrlBar, "Auto-Track: ON", 116, 22, false)
-    autoTrackBtn:SetPoint("RIGHT", ctrlBar, "RIGHT", -8, 0)
+    local charDrop = NS.CreateDropdown(ctrlBar, 114, 22, function(val)
+        if NS.UI and NS.UI.SetCharFilter then
+            NS.UI.SetCharFilter(val)
+        end
+    end)
+    charDrop:SetPoint("LEFT", searchBox, "RIGHT", 6, 0)
+
+    local altsBtn = NS.CreateButton(ctrlBar, "Alts", 34, 22, false)
+    altsBtn:SetPoint("LEFT", charDrop, "RIGHT", 3, 0)
+    altsBtn:SetScript("OnClick", function(self)
+        if onOpenCharGroups then onOpenCharGroups(self) end
+    end)
+
+    local autoTrackBtn = NS.CreateButton(ctrlBar, "Auto: ON", 74, 22, false)
+    autoTrackBtn:SetPoint("RIGHT", ctrlBar, "RIGHT", -6, 0)
     autoTrackBtn:SetScript("OnClick", function()
         local s = NS.DB:GetSettings()
         s.autoTrackLedger = not (s.autoTrackLedger ~= false)
         NS:FireCallback("DATA_UPDATED", nil, "SETTINGS_CHANGED")
     end)
 
-    local chatBtn = NS.CreateButton(ctrlBar, "Chat Log: ON", 96, 22, false)
-    chatBtn:SetPoint("RIGHT", autoTrackBtn, "LEFT", -4, 0)
+    local chatBtn = NS.CreateButton(ctrlBar, "Chat: ON", 70, 22, false)
+    chatBtn:SetPoint("RIGHT", autoTrackBtn, "LEFT", -3, 0)
     chatBtn:SetScript("OnClick", function()
         local s = NS.DB:GetSettings()
         s.announceAutoLedger = not (s.announceAutoLedger ~= false)
@@ -333,15 +346,19 @@ function LedgerUI.Create(parent, onOpenItem)
         end
         local s = NS.DB:GetSettings()
         local trackingOn = (s.autoTrackLedger ~= false)
-        autoTrackBtn:SetTextLabel("Auto-Track: " .. (trackingOn and "|cFF38D972ON|r" or "|cFFF55954OFF|r"))
+        autoTrackBtn:SetTextLabel("Auto: " .. (trackingOn and "|cFF38D972ON|r" or "|cFFF55954OFF|r"))
         autoTrackBtn:SetActiveState(trackingOn)
 
         local chatOn = (s.announceAutoLedger ~= false)
-        chatBtn:SetTextLabel("Chat Log: " .. (chatOn and "|cFF38D972ON|r" or "|cFFF55954OFF|r"))
+        chatBtn:SetTextLabel("Chat: " .. (chatOn and "|cFF38D972ON|r" or "|cFFF55954OFF|r"))
         chatBtn:SetActiveState(chatOn)
 
-        -- 2. Update Top Accounting KPI Banner for selected timeframe
-        local sum = NS.DB:GetLedgerSummary(selectedDays)
+        local charFilter = (NS.UI and NS.UI.GetCharFilter and NS.UI.GetCharFilter()) or "ALL"
+        charDrop:SetOptions(NS.DB:GetCharacterFilterOptions())
+        charDrop:SetSelected(charFilter, false)
+
+        -- 2. Update Top Accounting KPI Banner for selected timeframe & character/group
+        local sum = NS.DB:GetLedgerSummary(selectedDays, nil, charFilter)
         self._kpiValues.bought:SetText("|cFF42A8FA" .. NS.FormatMoney(sum.totalBought, true) .. "|r")
         self._kpiValues.sold:SetText("|cFF38D972" .. NS.FormatMoney(sum.totalSoldNet, true) .. "|r")
 
@@ -358,6 +375,7 @@ function LedgerUI.Create(parent, onOpenItem)
         local entries = NS.DB:GetLedgerEntries({
             days       = selectedDays,
             typeFilter = selectedType,
+            charFilter = charFilter,
             search     = searchText,
         })
 
