@@ -423,9 +423,16 @@ function NS.RunSelfTests()
     local dayCtx = NS.Analytics.GetDayContext(lowHist, baseNow)
     AssertTrue("Day context spans 24h (86400s)", (dayCtx.dayEnd - dayCtx.dayStart) == 86400)
 
-    -- 13. Crafted Item Underlying Mats & Craft Cost Overlay Lookup
+    -- 13. Crafted Item Underlying Mats, Craft Cost Overlay Lookup & Smart Auto-Classification
     local fapRec = NS.Arbitrage and NS.Arbitrage.GetRecipeForProduct(5634)
     AssertTrue("Free Action Potion recipe exists", fapRec ~= nil and #fapRec.reagents == 2)
+    local silkBoltRec = NS.Arbitrage and NS.Arbitrage.GetRecipeForProduct(4305)
+    AssertTrue("Bolt of Silk Cloth recipe exists (4x Silk Cloth)", silkBoltRec ~= nil and silkBoltRec.reagents[1][1] == 4306 and silkBoltRec.reagents[1][2] == 4)
+    AssertEq("GuessGroup Bolt of Silk Cloth -> Tailoring", NS.Catalog.GuessGroupForItem(4305, "Bolt of Silk Cloth"), "Tailoring")
+    AssertEq("GuessGroup Big Iron Bomb -> Blacksmithing & Eng", NS.Catalog.GuessGroupForItem(4394, "Big Iron Bomb"), "Blacksmithing & Eng")
+    AssertEq("GuessGroup Small Lustrous Pearl -> Enchanting", NS.Catalog.GuessGroupForItem(5498, "Small Lustrous Pearl"), "Enchanting")
+    AssertEq("GuessGroup Pyrite -> Mining", NS.Catalog.GuessGroupForItem(249391, "Pyrite"), "Mining")
+    AssertEq("GuessGroup Frilled Lichen -> Herbalism", NS.Catalog.GuessGroupForItem(249399, "Frilled Lichen"), "Herbalism")
 
     -- 14. Auto-Ledger Buy/Sale Accounting & Mailbox Dedup
     local testLedID = 999996

@@ -74,7 +74,6 @@ Catalog.ITEMS = {
     { 12359, "Thorium Bar",         "Mining", 1 },
     { 11370, "Dark Iron Ore",       "Mining", 1 },
     { 11371, "Dark Iron Bar",       "Mining", 1 },
-    { 12360, "Arcanite Bar",        "Mining", 2 },
     { 2835,  "Rough Stone",         "Mining", 1 },
     { 2836,  "Coarse Stone",        "Mining", 1 },
     { 2838,  "Heavy Stone",         "Mining", 1 },
@@ -99,19 +98,24 @@ Catalog.ITEMS = {
     { 8169,  "Thick Hide",          "Skinning", 1 },
     { 8170,  "Rugged Leather",      "Skinning", 1 },
     { 8171,  "Rugged Hide",         "Skinning", 1 },
+    { 15409, "Refined Deeprock Salt","Skinning", 1 },
     { 15407, "Cured Rugged Hide",   "Skinning", 1 },
     { 15417, "Devilsaur Leather",   "Skinning", 2 },
     { 15416, "Black Dragonscale",   "Skinning", 2 },
     { 15415, "Blue Dragonscale",    "Skinning", 2 },
-    { 12810, "Enchanted Leather",   "Skinning", 1 },
     { 17012, "Core Leather",        "Skinning", 3 },
 
     -- Tailoring & Cloth
     { 2589,  "Linen Cloth",         "Tailoring", 1 },
+    { 2996,  "Bolt of Linen Cloth", "Tailoring", 1 },
     { 2592,  "Wool Cloth",          "Tailoring", 1 },
+    { 2997,  "Bolt of Woolen Cloth","Tailoring", 1 },
     { 4306,  "Silk Cloth",          "Tailoring", 1 },
+    { 4305,  "Bolt of Silk Cloth",  "Tailoring", 1 },
     { 4338,  "Mageweave Cloth",     "Tailoring", 1 },
+    { 4339,  "Bolt of Mageweave",   "Tailoring", 1 },
     { 14047, "Runecloth",           "Tailoring", 1 },
+    { 14048, "Bolt of Runecloth",   "Tailoring", 1 },
     { 14256, "Felcloth",            "Tailoring", 1 },
     { 14342, "Mooncloth",           "Tailoring", 1 },
     { 3182,  "Spider's Silk",       "Tailoring", 1 },
@@ -144,13 +148,23 @@ Catalog.ITEMS = {
     { 14343, "Small Brilliant Shard",  "Enchanting", 3 },
     { 14344, "Large Brilliant Shard",  "Enchanting", 3 },
     { 20725, "Nexus Crystal",          "Enchanting", 4 },
+    { 12655, "Enchanted Thorium Bar",  "Enchanting", 2 },
+    { 12810, "Enchanted Leather",      "Enchanting", 1 },
     { 12811, "Righteous Orb",          "Enchanting", 2 },
+    { 5498,  "Small Lustrous Pearl",   "Enchanting", 2 },
+    { 5500,  "Iridescent Pearl",       "Enchanting", 2 },
+    { 7971,  "Black Pearl",            "Enchanting", 2 },
     { 13926, "Golden Pearl",           "Enchanting", 2 },
 
     -- Alchemy & Consumables
+    { 12360, "Arcanite Bar",                    "Alchemy", 2 },
     { 6370,  "Blackmouth Oil",                  "Alchemy", 1 },
     { 6371,  "Fire Oil",                        "Alchemy", 1 },
     { 13423, "Stonescale Oil",                  "Alchemy", 1 },
+    { 3824,  "Shadow Oil",                      "Alchemy", 1 },
+    { 2459,  "Swiftness Potion",                "Alchemy", 1 },
+    { 5634,  "Free Action Potion",              "Alchemy", 1 },
+    { 3387,  "Limited Invulnerability Potion",  "Alchemy", 1 },
     { 13446, "Major Healing Potion",            "Alchemy", 1 },
     { 13444, "Major Mana Potion",               "Alchemy", 1 },
     { 13452, "Elixir of the Mongoose",          "Alchemy", 1 },
@@ -159,39 +173,53 @@ Catalog.ITEMS = {
     { 13457, "Greater Fire Protection Potion",  "Alchemy", 1 },
     { 13458, "Greater Nature Protection Potion","Alchemy", 1 },
     { 13459, "Greater Shadow Protection Potion","Alchemy", 1 },
-    { 5634,  "Free Action Potion",              "Alchemy", 1 },
+    { 13460, "Greater Frost Protection Potion", "Alchemy", 1 },
     { 13510, "Flask of the Titans",             "Alchemy", 1 },
     { 13512, "Flask of Supreme Power",          "Alchemy", 1 },
     { 13511, "Flask of Distilled Wisdom",       "Alchemy", 1 },
 
     -- Blacksmithing, Engineering & Elementals
-    { 7067,  "Elemental Earth",      "Blacksmithing & Eng", 1 },
-    { 7068,  "Elemental Fire",       "Blacksmithing & Eng", 1 },
-    { 7069,  "Elemental Air",        "Blacksmithing & Eng", 1 },
-    { 7070,  "Elemental Water",      "Blacksmithing & Eng", 1 },
-    { 7076,  "Essence of Earth",     "Blacksmithing & Eng", 2 },
-    { 7078,  "Essence of Fire",      "Blacksmithing & Eng", 2 },
-    { 7080,  "Essence of Water",     "Blacksmithing & Eng", 2 },
-    { 7082,  "Essence of Air",       "Blacksmithing & Eng", 2 },
-    { 12808, "Essence of Undeath",   "Blacksmithing & Eng", 2 },
-    { 12655, "Enchanted Thorium Bar","Blacksmithing & Eng", 2 },
-    { 17010, "Fiery Core",           "Blacksmithing & Eng", 3 },
-    { 17011, "Lava Core",            "Blacksmithing & Eng", 3 },
-    { 7191,  "Fused Wiring",         "Blacksmithing & Eng", 1 },
-    { 15994, "Thorium Widget",       "Blacksmithing & Eng", 1 },
-    { 16000, "Thorium Tube",         "Blacksmithing & Eng", 1 },
+    { 7067,  "Elemental Earth",       "Blacksmithing & Eng", 1 },
+    { 7068,  "Elemental Fire",        "Blacksmithing & Eng", 1 },
+    { 7069,  "Elemental Air",         "Blacksmithing & Eng", 1 },
+    { 7070,  "Elemental Water",       "Blacksmithing & Eng", 1 },
+    { 7076,  "Essence of Earth",      "Blacksmithing & Eng", 2 },
+    { 7078,  "Essence of Fire",       "Blacksmithing & Eng", 2 },
+    { 7080,  "Essence of Water",      "Blacksmithing & Eng", 2 },
+    { 7082,  "Essence of Air",        "Blacksmithing & Eng", 2 },
+    { 12808, "Essence of Undeath",    "Blacksmithing & Eng", 2 },
+    { 17010, "Fiery Core",            "Blacksmithing & Eng", 3 },
+    { 17011, "Lava Core",             "Blacksmithing & Eng", 3 },
+    { 2871,  "Heavy Sharpening Stone","Blacksmithing & Eng", 1 },
+    { 7964,  "Solid Sharpening Stone","Blacksmithing & Eng", 1 },
+    { 12404, "Dense Sharpening Stone","Blacksmithing & Eng", 1 },
+    { 3241,  "Heavy Weightstone",     "Blacksmithing & Eng", 1 },
+    { 7965,  "Solid Weightstone",     "Blacksmithing & Eng", 1 },
+    { 12643, "Dense Weightstone",     "Blacksmithing & Eng", 1 },
+    { 4377,  "Heavy Blasting Powder", "Blacksmithing & Eng", 1 },
+    { 10505, "Solid Blasting Powder", "Blacksmithing & Eng", 1 },
+    { 15992, "Dense Blasting Powder", "Blacksmithing & Eng", 1 },
+    { 4394,  "Big Iron Bomb",         "Blacksmithing & Eng", 1 },
+    { 10507, "Solid Dynamite",        "Blacksmithing & Eng", 1 },
+    { 18641, "Dense Dynamite",        "Blacksmithing & Eng", 1 },
+    { 7191,  "Fused Wiring",          "Blacksmithing & Eng", 1 },
+    { 15994, "Thorium Widget",        "Blacksmithing & Eng", 1 },
+    { 16000, "Thorium Tube",          "Blacksmithing & Eng", 1 },
+    { 15993, "Thorium Grenade",       "Blacksmithing & Eng", 1 },
 
     -- Cooking & Fishing
-    { 6358,  "Oily Blackmouth",      "Cooking & Fishing", 1 },
-    { 6359,  "Firefin Snapper",      "Cooking & Fishing", 1 },
-    { 13422, "Stonescale Eel",       "Cooking & Fishing", 1 },
-    { 13759, "Raw Nightfin Snapper", "Cooking & Fishing", 1 },
-    { 13755, "Winter Squid",         "Cooking & Fishing", 1 },
-    { 13754, "Raw Glossy Mightfish", "Cooking & Fishing", 1 },
-    { 6522,  "Deviate Fish",         "Cooking & Fishing", 1 },
-    { 12208, "Tender Wolf Meat",     "Cooking & Fishing", 1 },
-    { 20424, "Sandworm Meat",        "Cooking & Fishing", 1 },
+    { 6358,  "Oily Blackmouth",       "Cooking & Fishing", 1 },
+    { 6359,  "Firefin Snapper",       "Cooking & Fishing", 1 },
+    { 13422, "Stonescale Eel",        "Cooking & Fishing", 1 },
+    { 13759, "Raw Nightfin Snapper",  "Cooking & Fishing", 1 },
+    { 13755, "Winter Squid",          "Cooking & Fishing", 1 },
+    { 13754, "Raw Glossy Mightfish",  "Cooking & Fishing", 1 },
+    { 6522,  "Deviate Fish",          "Cooking & Fishing", 1 },
+    { 12208, "Tender Wolf Meat",      "Cooking & Fishing", 1 },
+    { 20424, "Sandworm Meat",         "Cooking & Fishing", 1 },
     { 6657,  "Savory Deviate Delight","Cooking & Fishing", 1 },
+    { 13931, "Nightfin Soup",         "Cooking & Fishing", 1 },
+    { 20452, "Smoked Desert Dumplings","Cooking & Fishing", 1 },
 }
 
 -- Fast lookup by itemID
@@ -199,6 +227,105 @@ Catalog.BY_ID = {}
 for i = 1, #Catalog.ITEMS do
     local entry = Catalog.ITEMS[i]
     Catalog.BY_ID[entry[1]] = entry
+end
+
+-- Smart profession auto-classification for ANY item (including WoW: Forever custom items & gear).
+-- Prevents custom additions while on "All" from falling into "Herbalism".
+function Catalog.GuessGroupForItem(itemID, itemName)
+    itemID = tonumber(itemID)
+    if itemID and Catalog.BY_ID[itemID] then
+        return Catalog.BY_ID[itemID][3]
+    end
+
+    local resolvedName = itemName
+    local classID, subClassID = nil, nil
+    if itemID and NS.Compat and NS.Compat.GetItemInfoInstant then
+        local _, _, _, _, _, cID, scID = NS.Compat.GetItemInfoInstant(itemID)
+        classID, subClassID = cID, scID
+    end
+    if (not resolvedName or resolvedName == "") and itemID and NS.Compat and NS.Compat.GetItemInfo then
+        resolvedName = NS.Compat.GetItemInfo(itemID)
+    end
+
+    -- 1. Name-based precision checks (handles cross-profession crafts & WoW: Forever custom mats)
+    local n = (type(resolvedName) == "string") and resolvedName:lower() or ""
+    if n ~= "" then
+        if n:find("enchanted ", 1, true) or n:find(" dust", 1, true) or n:find(" shard", 1, true)
+            or n:find(" pearl", 1, true) or n:find("righteous orb", 1, true)
+            or n:find("wizard oil", 1, true) or n:find("mana oil", 1, true)
+            or (n:find("essence", 1, true) and (n:find("magic", 1, true) or n:find("astral", 1, true) or n:find("mystic", 1, true) or n:find("nether", 1, true) or n:find("eternal", 1, true)))
+        then
+            return "Enchanting"
+        end
+        if n:find("sharpening stone", 1, true) or n:find("weightstone", 1, true)
+            or n:find("blasting powder", 1, true) or n:find("dynamite", 1, true)
+            or n:find("bomb", 1, true) or n:find("grenade", 1, true)
+            or n:find("widget", 1, true) or n:find("thorium tube", 1, true)
+            or n:find("wiring", 1, true) or n:find("elemental ", 1, true)
+            or n:find("essence of ", 1, true)
+        then
+            return "Blacksmithing & Eng"
+        end
+        if n:find("bolt of ", 1, true) or n:find("cloth", 1, true) or n:find("spider's silk", 1, true)
+            or n:find("shadow silk", 1, true) or n:find("spider silk", 1, true)
+        then
+            return "Tailoring"
+        end
+        if n:find("potion", 1, true) or n:find("elixir", 1, true) or n:find("flask", 1, true)
+            or n:find("arcanite bar", 1, true) or n:find(" oil", 1, true)
+        then
+            return "Alchemy"
+        end
+        if n:find("leather", 1, true) or n:find("hide", 1, true) or n:find("dragonscale", 1, true)
+            or n:find("deeprock salt", 1, true)
+        then
+            return "Skinning"
+        end
+        if n:find(" ore", 1, true) or n:find(" bar", 1, true) or n:find(" stone", 1, true)
+            or n:find("pyrite", 1, true) or n:find("crystal", 1, true)
+            or n:find("sapphire", 1, true) or n:find("emerald", 1, true)
+            or n:find("ruby", 1, true) or n:find("opal", 1, true) or n:find("diamond", 1, true)
+        then
+            return "Mining"
+        end
+        if n:find("lichen", 1, true) or n:find("lotus", 1, true) or n:find("bloom", 1, true)
+            or n:find("leaf", 1, true) or n:find("moss", 1, true) or n:find("weed", 1, true)
+            or n:find("grass", 1, true) or n:find("kelp", 1, true) or n:find("root", 1, true)
+            or n:find("thorn", 1, true) or n:find("thistle", 1, true) or n:find("silversage", 1, true)
+            or n:find("dreamfoil", 1, true) or n:find("icecap", 1, true) or n:find("sansam", 1, true)
+            or n:find("gromsblood", 1, true) or n:find("mushroom", 1, true)
+        then
+            return "Herbalism"
+        end
+        if n:find("snapper", 1, true) or n:find("fish", 1, true) or n:find("squid", 1, true)
+            or n:find("eel", 1, true) or n:find("salmon", 1, true) or n:find("meat", 1, true)
+            or n:find("soup", 1, true) or n:find("dumpling", 1, true) or n:find("delight", 1, true)
+            or n:find("steak", 1, true) or n:find("stew", 1, true)
+        then
+            return "Cooking & Fishing"
+        end
+    end
+
+    -- 2. WoW item classID / subClassID classification (Enum.ItemClass.Tradegoods = 7, Consumable = 0)
+    if classID == 7 then
+        if subClassID == 9 then return "Herbalism"
+        elseif subClassID == 7 then return "Mining"
+        elseif subClassID == 6 then return "Skinning"
+        elseif subClassID == 5 then return "Tailoring"
+        elseif subClassID == 12 then return "Enchanting"
+        elseif subClassID == 8 then return "Cooking & Fishing"
+        elseif subClassID == 1 or subClassID == 2 or subClassID == 3 or subClassID == 10 then
+            return "Blacksmithing & Eng"
+        end
+    elseif classID == 0 then
+        if subClassID == 1 or subClassID == 2 or subClassID == 3 then
+            return "Alchemy"
+        elseif subClassID == 5 then
+            return "Cooking & Fishing"
+        end
+    end
+
+    return "Flipping"
 end
 
 -- Searches the built-in profession catalog by partial name or Item ID

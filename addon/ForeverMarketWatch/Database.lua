@@ -90,6 +90,43 @@ function DB:Init()
         end
     end
 
+    -- One-time v6 watchlist classification repair: fixes items previously dumped into
+    -- "Herbalism" (when added while viewing "All") and updates reclassified catalog items.
+    if prevSchema > 0 and prevSchema < 6 and NS.Catalog and NS.Catalog.GuessGroupForItem then
+        local fixedCount = 0
+        local knownReclass = {
+            [12360] = { old = "Mining",              new = "Alchemy" },    -- Arcanite Bar
+            [12655] = { old = "Blacksmithing & Eng", new = "Enchanting" }, -- Enchanted Thorium Bar
+            [12810] = { old = "Skinning",            new = "Enchanting" }, -- Enchanted Leather
+        }
+        for _, m in pairs(ForeverMarketWatchDB.markets) do
+            if type(m) == "table" and type(m.watchlist) == "table" then
+                local gSet = {}
+                if type(m.groups) == "table" then
+                    for i = 1, #m.groups do gSet[m.groups[i]] = true end
+                end
+                for id, entry in pairs(m.watchlist) do
+                    if type(entry) == "table" then
+                        local rc = knownReclass[id]
+                        if rc and entry.group == rc.old and gSet[rc.new] then
+                            entry.group = rc.new
+                            fixedCount = fixedCount + 1
+                        elseif entry.group == "Herbalism" then
+                            local guessed = NS.Catalog.GuessGroupForItem(id, entry.name)
+                            if guessed and guessed ~= "Herbalism" and gSet[guessed] then
+                                entry.group = guessed
+                                fixedCount = fixedCount + 1
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        if fixedCount > 0 then
+            NS.Print(string.format("Watchlist cleanup: reclassified %d misplaced item(s) into their proper profession group.", fixedCount))
+        end
+    end
+
     -- Ensure current market exists, seed profession mats if not yet seeded,
     -- merge any synced Blizzard API feed data, and compact history.
     local market = self:GetActiveMarket()
@@ -2719,14 +2756,23 @@ function DB:AddWatchItem(itemID, groupName, explicitName, explicitIcon, explicit
 
     local market = self:GetActiveMarket()
     local groups = market.groups
+    local name, _, quality, _, _, _, _, _, _, icon = NS.Compat.GetItemInfo(itemID)
+    if not name then
+        NS.Compat.RequestLoadItemDataByID(itemID)
+    end
+    local catSpec = NS.Catalog and NS.Catalog.BY_ID and NS.Catalog.BY_ID[itemID]
+    local resolvedName = name or explicitName or (catSpec and catSpec[2]) or ("Item #" .. tostring(itemID))
+
     local targetGroup = groupName
     if not targetGroup or targetGroup == "All" or targetGroup == "Alerts Only" or not self:HasGroup(targetGroup) then
-        -- Use catalog profession group if known, otherwise first group
-        local catSpec = NS.Catalog and NS.Catalog.BY_ID and NS.Catalog.BY_ID[itemID]
-        if catSpec and self:HasGroup(catSpec[3]) then
-            targetGroup = catSpec[3]
+        -- Auto-classify by profession catalog, WoW item subtype, or name pattern (fallback: Flipping)
+        local guessed = (NS.Catalog and NS.Catalog.GuessGroupForItem) and NS.Catalog.GuessGroupForItem(itemID, resolvedName) or nil
+        if guessed and self:HasGroup(guessed) then
+            targetGroup = guessed
+        elseif self:HasGroup("Flipping") then
+            targetGroup = "Flipping"
         else
-            targetGroup = groups[1] or "Herbalism"
+            targetGroup = groups[#groups] or groups[1] or "Flipping"
         end
     end
 
@@ -2740,15 +2786,9 @@ function DB:AddWatchItem(itemID, groupName, explicitName, explicitIcon, explicit
         return true, existing, false
     end
 
-    local name, _, quality, _, _, _, _, _, _, icon = NS.Compat.GetItemInfo(itemID)
-    if not name then
-        NS.Compat.RequestLoadItemDataByID(itemID)
-    end
-
-    local catSpec = NS.Catalog and NS.Catalog.BY_ID and NS.Catalog.BY_ID[itemID]
     local entry = {
         itemID     = itemID,
-        name       = name or explicitName or (catSpec and catSpec[2]) or ("Item #" .. tostring(itemID)),
+        name       = resolvedName,
         icon       = icon or explicitIcon or NS.Compat.GetItemIconByID(itemID) or 134400,
         quality    = quality ~= nil and quality or (explicitQuality ~= nil and explicitQuality or (catSpec and catSpec[4]) or 1),
         group      = targetGroup,
