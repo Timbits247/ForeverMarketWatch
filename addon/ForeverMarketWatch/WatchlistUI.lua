@@ -262,51 +262,273 @@ end
 
 local function CreateTargetsPopover()
     local pop = NS.CreatePanel(UIParent, nil, NS.COLORS.BG_DARK, NS.COLORS.BORDER_ACCENT, false)
-    pop:SetSize(272, 162)
+    pop:SetSize(352, 296)
     pop:SetFrameStrata("FULLSCREEN_DIALOG")
     pop:SetFrameLevel(200)
     pop:EnableMouse(true)
     pop:SetClampedToScreen(true)
     pop:Hide()
 
+    local activeItemID = nil
+    local windowDays = 7
+    local currentRec = nil
+
     local title = pop:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOPLEFT", 14, -12)
-    title:SetText("Price Alert Targets")
+    title:SetPoint("TOPLEFT", 12, -10)
+    title:SetPoint("RIGHT", pop, "RIGHT", -84, 0)
+    title:SetJustifyH("LEFT")
+    title:SetWordWrap(false)
+    title:SetText("Price Targets")
 
-    local hint = pop:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    hint:SetPoint("TOPLEFT", 14, -29)
-    hint:SetText("Format: 2g 50s 10c, 12.5g, 45s (blank=clear)")
+    local w7Btn = NS.CreateButton(pop, "7D", 32, 18, false)
+    w7Btn:SetPoint("TOPRIGHT", -46, -8)
 
+    local w30Btn = NS.CreateButton(pop, "30D", 34, 18, false)
+    w30Btn:SetPoint("TOPRIGHT", -10, -8)
+
+    -- 1. Market Distribution Summary Box (Median, P10-P90, Scans, Best Days)
+    local statsBox = NS.CreatePanel(pop, nil, NS.COLORS.BG_CARD, NS.COLORS.BORDER, true)
+    statsBox:SetPoint("TOPLEFT", 12, -32)
+    statsBox:SetPoint("TOPRIGHT", -12, -32)
+    statsBox:SetHeight(40)
+
+    local statsLine1 = statsBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    statsLine1:SetPoint("TOPLEFT", 8, -6)
+    statsLine1:SetPoint("TOPRIGHT", -8, -6)
+    statsLine1:SetJustifyH("LEFT")
+    statsLine1:SetWordWrap(false)
+
+    local statsLine2 = statsBox:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    statsLine2:SetPoint("BOTTOMLEFT", 8, 6)
+    statsLine2:SetPoint("BOTTOMRIGHT", -8, 6)
+    statsLine2:SetJustifyH("LEFT")
+    statsLine2:SetWordWrap(false)
+
+    -- 2. Three 1-Click Data-Driven Strategy Presets (Quick / Balanced / Sniper)
+    local presetHdr = pop:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    presetHdr:SetPoint("TOPLEFT", 12, -78)
+    presetHdr:SetText("1-Click Suggested Targets (after 5% AH cut):")
+
+    local presetCards = {}
+    local cardW = 104
+    local cardGap = 8
+    for i = 1, 3 do
+        local btn = CreateFrame("Button", nil, pop, "BackdropTemplate")
+        btn:SetSize(cardW, 66)
+        btn:SetPoint("TOPLEFT", pop, "TOPLEFT", 12 + (i - 1) * (cardW + cardGap), -95)
+        if btn.SetBackdrop then
+            btn:SetBackdrop({
+                bgFile   = "Interface\\Buttons\\WHITE8x8",
+                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                tile     = false, edgeSize = 10,
+                insets   = { left = 2, right = 2, top = 2, bottom = 2 },
+            })
+            btn:SetBackdropColor(0.14, 0.12, 0.10, 0.94)
+            local bc = (i == 2) and NS.COLORS.BORDER_ACCENT or NS.COLORS.BORDER
+            btn:SetBackdropBorderColor(bc[1], bc[2], bc[3], 0.95)
+        end
+
+        local hl = btn:CreateTexture(nil, "HIGHLIGHT")
+        hl:SetAllPoints()
+        hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+        hl:SetBlendMode("ADD")
+        hl:SetAlpha(0.25)
+
+        local nameFS = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        nameFS:SetPoint("TOP", 0, -6)
+        btn.nameFS = nameFS
+
+        local buyFS = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        buyFS:SetPoint("TOP", 0, -21)
+        buyFS:SetWidth(cardW - 8)
+        buyFS:SetJustifyH("CENTER")
+        buyFS:SetWordWrap(false)
+        btn.buyFS = buyFS
+
+        local sellFS = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        sellFS:SetPoint("TOP", 0, -35)
+        sellFS:SetWidth(cardW - 8)
+        sellFS:SetJustifyH("CENTER")
+        sellFS:SetWordWrap(false)
+        btn.sellFS = sellFS
+
+        local roiFS = btn:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        roiFS:SetPoint("BOTTOM", 0, 5)
+        roiFS:SetWidth(cardW - 8)
+        roiFS:SetJustifyH("CENTER")
+        roiFS:SetWordWrap(false)
+        btn.roiFS = roiFS
+
+        presetCards[i] = btn
+    end
+
+    -- 3. Custom Buy / Sell Inputs
     local buyLbl = pop:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    buyLbl:SetPoint("TOPLEFT", 14, -52)
-    buyLbl:SetText("Buy Below:")
+    buyLbl:SetPoint("TOPLEFT", 14, -172)
+    buyLbl:SetText("Buy <=")
     buyLbl:SetTextColor(0.22, 0.85, 0.45, 1)
 
-    local buyBox, buyEB = NS.CreateEditBox(pop, 126, 22, "e.g. 2g 50s 00c")
-    buyBox:SetPoint("TOPRIGHT", -14, -48)
+    local buyBox, buyEB = NS.CreateEditBox(pop, 108, 22, "e.g. 75s")
+    buyBox:SetPoint("LEFT", buyLbl, "RIGHT", 6, 0)
 
     local sellLbl = pop:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    sellLbl:SetPoint("TOPLEFT", 14, -84)
-    sellLbl:SetText("Sell Above:")
+    sellLbl:SetPoint("LEFT", buyBox, "RIGHT", 12, 0)
+    sellLbl:SetText("Sell >=")
     sellLbl:SetTextColor(0.96, 0.35, 0.33, 1)
 
-    local sellBox, sellEB = NS.CreateEditBox(pop, 126, 22, "e.g. 4g 20s 00c")
-    sellBox:SetPoint("TOPRIGHT", -14, -80)
+    local sellBox, sellEB = NS.CreateEditBox(pop, 108, 22, "e.g. 1g 10s")
+    sellBox:SetPoint("LEFT", sellLbl, "RIGHT", 6, 0)
 
-    local saveBtn = NS.CreateButton(pop, "Save Targets", 104, 22, true)
-    saveBtn:SetPoint("BOTTOMLEFT", 14, 14)
+    -- 4. Live Target Plan Health Bar (updates on every keystroke or preset click!)
+    local evalBox = NS.CreatePanel(pop, nil, NS.COLORS.BG_PANEL, NS.COLORS.BORDER, true)
+    evalBox:SetPoint("TOPLEFT", 12, -200)
+    evalBox:SetPoint("TOPRIGHT", -12, -200)
+    evalBox:SetHeight(46)
 
-    local clearBtn = NS.CreateButton(pop, "Clear", 58, 22, false)
+    local evalLine1 = evalBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    evalLine1:SetPoint("TOPLEFT", 8, -7)
+    evalLine1:SetPoint("TOPRIGHT", -8, -7)
+    evalLine1:SetJustifyH("LEFT")
+    evalLine1:SetWordWrap(false)
+
+    local evalLine2 = evalBox:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    evalLine2:SetPoint("BOTTOMLEFT", 8, 7)
+    evalLine2:SetPoint("BOTTOMRIGHT", -8, 7)
+    evalLine2:SetJustifyH("LEFT")
+    evalLine2:SetWordWrap(false)
+
+    local saveBtn = NS.CreateButton(pop, "Save Targets", 112, 24, true)
+    saveBtn:SetPoint("BOTTOMLEFT", 12, 12)
+
+    local clearBtn = NS.CreateButton(pop, "Clear", 64, 24, false)
     clearBtn:SetPoint("LEFT", saveBtn, "RIGHT", 6, 0)
 
-    local closeBtn = NS.CreateButton(pop, "Close", 58, 22, false)
-    closeBtn:SetPoint("BOTTOMRIGHT", -14, 14)
+    local closeBtn = NS.CreateButton(pop, "Close", 64, 24, false)
+    closeBtn:SetPoint("BOTTOMRIGHT", -12, 12)
 
-    local function CommitTargets()
-        if not selectedItemID then return end
+    local function UpdateLiveEval()
+        if not activeItemID then return end
+        local hist = NS.DB:GetItemHistory(activeItemID)
         local buyVal = NS.ParseMoney(buyEB:GetText())
         local sellVal = NS.ParseMoney(sellEB:GetText())
-        NS.DB:SetItemTargets(selectedItemID, buyVal, sellVal)
+        local ev = NS.Analytics.EvaluateTargetPlan(hist, buyVal, sellVal, windowDays)
+
+        if buyVal and sellVal then
+            local roiStr = ev.netRoiPct and (" (" .. NS.FormatSignedPct(ev.netRoiPct, 1) .. ")") or ""
+            evalLine1:SetText(string.format(
+                "%s%s|r  ·  Net: %s%s",
+                ev.verdictHex, ev.verdict,
+                NS.FormatSignedMoney(ev.netProfit, true),
+                roiStr
+            ))
+        elseif buyVal then
+            evalLine1:SetText(string.format(
+                "%s%s|r  ·  Break-Even: |cFFFFCC33%s|r",
+                ev.verdictHex, ev.verdict,
+                NS.FormatMoney(ev.breakEven or 0, true)
+            ))
+        elseif sellVal then
+            evalLine1:SetText(string.format("%s%s|r", ev.verdictHex, ev.verdict))
+        else
+            evalLine1:SetText("|cFF998C78Pick a preset above or enter custom Buy / Sell prices.|r")
+        end
+
+        if ev.sampleCount >= 2 and (ev.buyHitPct or ev.sellHitPct) then
+            local parts = {}
+            if ev.buyHitPct then
+                table.insert(parts, string.format("Buy fills |cFF38D972%.0f%%|r of scans", ev.buyHitPct))
+            end
+            if ev.sellHitPct then
+                table.insert(parts, string.format("Sell hits |cFFFFD100%.0f%%|r of scans", ev.sellHitPct))
+            end
+            evalLine2:SetText(table.concat(parts, "  ·  ") .. string.format(" (%d %s)", ev.sampleCount, ev.windowLabel))
+        else
+            evalLine2:SetText("Format: 75s, 2g 50s 10c, 1.5g (blank = clear)")
+        end
+    end
+
+    local function RefreshAnalytics()
+        if not activeItemID then return end
+        w7Btn:SetActiveState(windowDays == 7)
+        w30Btn:SetActiveState(windowDays == 30)
+
+        local entry = NS.DB:GetWatchItem(activeItemID)
+        local hist = NS.DB:GetItemHistory(activeItemID)
+        local name = (entry and entry.name) or ("Item #" .. tostring(activeItemID))
+        title:SetText("Targets — " .. name)
+
+        currentRec = NS.Analytics.RecommendTargets(hist, windowDays)
+        if currentRec and currentRec.ready then
+            statsLine1:SetText(string.format(
+                "%s Median: |cFFFFD100%s|r   ·   P10–P90: %s – %s",
+                currentRec.windowLabel,
+                NS.FormatMoney(currentRec.median, true),
+                NS.FormatMoney(currentRec.p10, true),
+                NS.FormatMoney(currentRec.p90, true)
+            ))
+
+            local line2Parts = { string.format("%d scans", currentRec.sampleCount) }
+            if currentRec.bestBuyDay and currentRec.bestSellDay and currentRec.bestBuyDay ~= currentRec.bestSellDay then
+                table.insert(line2Parts, string.format("Best Buy: |cFF38D972%s|r · Sell: |cFFFFCC33%s|r", currentRec.bestBuyDay, currentRec.bestSellDay))
+            elseif not currentRec.flippable then
+                table.insert(line2Parts, "|cFFFFA030Low swing — tight margin after 5% cut|r")
+            else
+                table.insert(line2Parts, string.format("P10–P90 Swing: |cFF38D972%.0f%%|r", currentRec.trimSwingPct or 0))
+            end
+            statsLine2:SetText(table.concat(line2Parts, "  ·  "))
+
+            for i = 1, 3 do
+                local card = presetCards[i]
+                local pr = currentRec.presets[i]
+                if pr then
+                    card.nameFS:SetText((i == 2) and ("|cFFFFD100" .. pr.label .. " *|r") or pr.label)
+                    card.buyFS:SetText("|cFF38D972B:|r " .. NS.FormatMoney(pr.buy, true))
+                    card.sellFS:SetText("|cFFF55954S:|r " .. NS.FormatMoney(pr.sell, true))
+                    local roiTxt = pr.netRoiPct and NS.FormatSignedPct(pr.netRoiPct, 0) or "--"
+                    card.roiFS:SetText(roiTxt .. " net")
+                    card:Enable()
+                    card:SetAlpha(1)
+                    card:SetScript("OnClick", function()
+                        buyEB:SetText(NS.FormatMoneyPlain(pr.buy))
+                        sellEB:SetText(NS.FormatMoneyPlain(pr.sell))
+                        UpdateLiveEval()
+                    end)
+                end
+            end
+        else
+            statsLine1:SetText("|cFFFFA030Not enough history yet|r (" .. tostring((currentRec and currentRec.sampleCount) or 0) .. " scans)")
+            statsLine2:SetText("Needs 3+ scans to calculate Quick / Balanced / Sniper targets.")
+            for i = 1, 3 do
+                local card = presetCards[i]
+                card.nameFS:SetText((i == 1 and "Quick") or (i == 2 and "Balanced") or "Sniper")
+                card.buyFS:SetText("|cFF8A7E6B--|r")
+                card.sellFS:SetText("|cFF8A7E6B--|r")
+                card.roiFS:SetText("No data")
+                card:Disable()
+                card:SetAlpha(0.55)
+            end
+        end
+
+        UpdateLiveEval()
+    end
+
+    w7Btn:SetScript("OnClick", function()
+        windowDays = 7
+        RefreshAnalytics()
+    end)
+    w30Btn:SetScript("OnClick", function()
+        windowDays = 30
+        RefreshAnalytics()
+    end)
+
+    buyEB:SetScript("OnTextChanged", function() UpdateLiveEval() end)
+    sellEB:SetScript("OnTextChanged", function() UpdateLiveEval() end)
+
+    local function CommitTargets()
+        if not activeItemID then return end
+        local buyVal = NS.ParseMoney(buyEB:GetText())
+        local sellVal = NS.ParseMoney(sellEB:GetText())
+        NS.DB:SetItemTargets(activeItemID, buyVal, sellVal)
         pop:Hide()
     end
 
@@ -316,8 +538,8 @@ local function CreateTargetsPopover()
     clearBtn:SetScript("OnClick", function()
         buyEB:SetText("")
         sellEB:SetText("")
-        if selectedItemID then
-            NS.DB:SetItemTargets(selectedItemID, nil, nil)
+        if activeItemID then
+            NS.DB:SetItemTargets(activeItemID, nil, nil)
         end
         pop:Hide()
     end)
@@ -327,8 +549,10 @@ local function CreateTargetsPopover()
         local entry = NS.DB:GetWatchItem(itemID)
         if not entry then return end
         CloseAllPopovers()
+        activeItemID = itemID
         buyEB:SetText(NS.FormatMoneyPlain(entry.buyTarget))
         sellEB:SetText(NS.FormatMoneyPlain(entry.sellTarget))
+        RefreshAnalytics()
         self:ClearAllPoints()
         self:SetPoint("TOPRIGHT", anchor, "BOTTOMRIGHT", 0, -4)
         self:SetFrameStrata("FULLSCREEN_DIALOG")

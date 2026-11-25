@@ -669,3 +669,229 @@ function Analytics.GetItemSummary(watchEntry, itemHist, timeframe, nowTs)
         series              = series,
     }
 end
+
+--------------------------------------------------------------------------------
+-- Data-Driven Buy/Sell Target Analytics (Percentiles, Hit Rates & Presets)
+--------------------------------------------------------------------------------
+
+local function CollectTargetSamples(itemHist, daysWindow, nowTs)
+    if type(itemHist) ~= "table" then return {}, "7D" end
+    local now = nowTs or (time and time()) or 0
+    local days = daysWindow or 7
+    local cutoff = now - (days * 86400)
+
+    local function Gather(minTs)
+        local vals = {}
+        local intraday = itemHist.intraday or {}
+        for i = 1, #intraday do
+            local pt = intraday[i]
+            if pt[1] and pt[1] >= minTs and pt[2] and pt[2] > 0 then
+                table.insert(vals, pt[2])
+            end
+        end
+        local daily = itemHist.daily or {}
+        for dayKey, d in pairs(daily) do
+            local ts = NS.TimestampFromDayKey(dayKey)
+            if ts >= minTs and d[1] and d[1] > 0 then
+                -- Only include daily buckets older than intraday retention to avoid double-weighting
+                if ts < (now - (7 * 86400)) or #vals < 6 then
+                    table.insert(vals, d[1])
+                end
+            end
+        end
+        return vals
+    end
+
+    local vals = Gather(cutoff)
+    local label = tostring(days) .. "D"
+    if #vals < 6 then
+        local vals30 = Gather(now - (30 * 86400))
+        if #vals30 > #vals then
+            vals = vals30
+            label = "30D"
+        end
+    end
+    if #vals < 6 then
+        local valsAll = Gather(0)
+        if #valsAll > #vals then
+            vals = valsAll
+            label = "All"
+        end
+    end
+
+    table.sort(vals)
+    return vals, label
+end
+
+local function Percentile(sorted, p)
+    local n = #sorted
+    if n == 0 then return nil end
+    if n == 1 then return sorted[1] end
+    local pos = 1 + (n - 1) * p
+    local lo = math.floor(pos)
+    local hi = math.ceil(pos)
+    if lo == hi then
+        return sorted[lo]
+    end
+    local frac = pos - lo
+    return math.floor(sorted[lo] + (sorted[hi] - sorted[lo]) * frac + 0.5)
+end
+
+-- Evaluates any custom (or preset) Buy & Sell target pair against historical scans:
+-- returns netProfit, netRoiPct, breakEven, buyHitPct, sellHitPct, verdict, verdictColor.
+function Analytics.EvaluateTargetPlan(itemHist, buyTarget, sellTarget, daysWindow, nowTs)
+    local cutRate = Analytics.GetAHCutRate()
+    local samples, windowLabel = CollectTargetSamples(itemHist, daysWindow or 7, nowTs)
+    local n = #samples
+
+    local buy = (buyTarget and buyTarget > 0) and math.floor(buyTarget + 0.5) or nil
+    local sell = (sellTarget and sellTarget > 0) and math.floor(sellTarget + 0.5) or nil
+
+    local buyHits, sellHits = 0, 0
+    for i = 1, n do
+        local v = samples[i]
+        if buy and v <= buy then buyHits = buyHits + 1 end
+        if sell and v >= sell then sellHits = sellHits + 1 end
+    end
+
+    local buyHitPct = (n > 0 and buy) and ((buyHits / n) * 100) or nil
+    local sellHitPct = (n > 0 and sell) and ((sellHits / n) * 100) or nil
+
+    local breakEven = buy and math.ceil(buy / (1 - cutRate)) or nil
+    local netProfit, netRoiPct = nil, nil
+    if buy and sell then
+        netProfit = math.floor((sell * (1 - cutRate)) - buy + 0.5)
+        netRoiPct = (buy > 0) and ((netProfit / buy) * 100) or nil
+    end
+
+    local verdict = "Set Buy & Sell"
+    local verdictHex = "|cFF998C78"
+    if buy and sell then
+        if netProfit <= 0 then
+            verdict = "Loss after 5% cut!"
+            verdictHex = "|cFFF55954"
+        elseif n >= 4 and ((buyHitPct and buyHitPct < 3) or (sellHitPct and sellHitPct < 3)) then
+            verdict = "Rarely fills"
+            verdictHex = "|cFFFFA030"
+        elseif netRoiPct and netRoiPct >= 12 and (not buyHitPct or buyHitPct >= 8) and (not sellHitPct or sellHitPct >= 8) then
+            verdict = "Strong flip"
+            verdictHex = "|cFF38D972"
+        elseif netRoiPct and netRoiPct >= 5 then
+            verdict = "Tight margin"
+            verdictHex = "|cFFFFD100"
+        else
+            verdict = "Very thin margin"
+            verdictHex = "|cFFFFA030"
+        end
+    elseif buy then
+        verdict = (buyHitPct and buyHitPct >= 5) and "Buy alert active" or "Deep buy alert"
+        verdictHex = "|cFF38D972"
+    elseif sell then
+        verdict = (sellHitPct and sellHitPct >= 5) and "Sell alert active" or "High sell alert"
+        verdictHex = "|cFFFFD100"
+    end
+
+    return {
+        sampleCount = n,
+        windowLabel = windowLabel,
+        buyTarget   = buy,
+        sellTarget  = sell,
+        breakEven   = breakEven,
+        netProfit   = netProfit,
+        netRoiPct   = netRoiPct,
+        buyHits     = buyHits,
+        sellHits    = sellHits,
+        buyHitPct   = buyHitPct,
+        sellHitPct  = sellHitPct,
+        verdict     = verdict,
+        verdictHex  = verdictHex,
+    }
+end
+
+-- Computes outlier-resistant percentile target recommendations (Quick / Balanced / Sniper)
+-- using live 24/7 hourly price history + 5% AH cut enforcement + weekday seasonality.
+function Analytics.RecommendTargets(itemHist, daysWindow, nowTs)
+    local cutRate = Analytics.GetAHCutRate()
+    local samples, windowLabel = CollectTargetSamples(itemHist, daysWindow or 7, nowTs)
+    local n = #samples
+    if n < 3 then
+        return {
+            ready       = false,
+            sampleCount = n,
+            windowLabel = windowLabel,
+            reason      = "Need at least 3 price scans for statistical targets.",
+        }
+    end
+
+    local p10 = Percentile(samples, 0.10)
+    local p20 = Percentile(samples, 0.20)
+    local p30 = Percentile(samples, 0.30)
+    local p50 = Percentile(samples, 0.50)
+    local p70 = Percentile(samples, 0.70)
+    local p80 = Percentile(samples, 0.80)
+    local p90 = Percentile(samples, 0.90)
+
+    local function BuildPreset(id, label, desc, rawBuy, rawSell, minNetMargin)
+        local buy = math.max(1, rawBuy)
+        local sell = math.max(buy + 1, rawSell)
+        local minProfitableSell = math.ceil((buy * (1 + minNetMargin)) / (1 - cutRate))
+        local adjusted = false
+        if sell < minProfitableSell then
+            -- Try nudging sell up to P90 first, or buy down to P10 if flat
+            if p90 >= minProfitableSell then
+                sell = minProfitableSell
+                adjusted = true
+            else
+                sell = math.max(sell, math.ceil((buy * 1.03) / (1 - cutRate)))
+                adjusted = true
+            end
+        end
+        local eval = Analytics.EvaluateTargetPlan(itemHist, buy, sell, daysWindow or 7, nowTs)
+        return {
+            id          = id,
+            label       = label,
+            desc        = desc,
+            buy         = buy,
+            sell        = sell,
+            netProfit   = eval.netProfit,
+            netRoiPct   = eval.netRoiPct,
+            buyHitPct   = eval.buyHitPct,
+            sellHitPct  = eval.sellHitPct,
+            viable      = (eval.netProfit or 0) > 0,
+            adjusted    = adjusted,
+        }
+    end
+
+    local presets = {
+        BuildPreset("quick",    "Quick",    "Fast fills (P30 -> P70)",  p30, p70, 0.06),
+        BuildPreset("balanced", "Balanced", "Sweet spot (P20 -> P80)",  p20, p80, 0.10),
+        BuildPreset("sniper",   "Sniper",   "Max margin (P10 -> P90)",  p10, p90, 0.15),
+    }
+
+    -- Weekday seasonality insight (when >= 3 distinct days exist)
+    local cyc = Analytics.ComputeDayOfWeekCycle(itemHist, "30D", nowTs)
+    local bestBuyDay  = (cyc and cyc.validDays >= 3) and cyc.bestBuyDay or nil
+    local bestSellDay = (cyc and cyc.validDays >= 3) and cyc.bestSellDay or nil
+
+    -- Check if item actually swings enough to be worth flipping after 5% AH cut
+    local trimSwingPct = (p10 and p10 > 0) and (((p90 - p10) / p10) * 100) or 0
+    local flippable = (presets[2].netRoiPct and presets[2].netRoiPct >= 8) or (presets[3].netRoiPct and presets[3].netRoiPct >= 12)
+
+    return {
+        ready        = true,
+        sampleCount  = n,
+        windowLabel  = windowLabel,
+        p10          = p10,
+        p20          = p20,
+        p30          = p30,
+        median       = p50,
+        p70          = p70,
+        p80          = p80,
+        p90          = p90,
+        trimSwingPct = trimSwingPct,
+        flippable    = flippable,
+        bestBuyDay   = bestBuyDay,
+        bestSellDay  = bestSellDay,
+        presets      = presets,
+    }
+end

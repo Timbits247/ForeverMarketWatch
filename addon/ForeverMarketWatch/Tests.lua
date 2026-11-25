@@ -550,6 +550,20 @@ function NS.RunSelfTests()
     AssertEq("Undercut check flags below break-even (80c < 90c)", ownMeta.belowCostCount, 1)
     AssertEq("Undercut amount = 15c", ownList[1] and ownList[1].undercutBy, 15)
 
+    -- 19. Data-Driven Percentile Buy/Sell Target Recommender & Plan Evaluator
+    local distHist = { intraday = {}, daily = {} }
+    local distPrices = { 10, 70, 72, 75, 78, 80, 82, 85, 88, 92, 96, 100, 105, 110, 115, 500 } -- includes 10c & 500c outliers!
+    for i = 1, #distPrices do
+        table.insert(distHist.intraday, { baseNow - (i * 3600), distPrices[i], distPrices[i], distPrices[i], 50 })
+    end
+    local recT = NS.Analytics.RecommendTargets(distHist, 7, baseNow)
+    AssertTrue("Target recommender ready with 16 scans", recT and recT.ready)
+    AssertTrue("Outlier-resistant P10 ignores 10c typo (>65c)", recT.p10 and recT.p10 > 65)
+    AssertTrue("Outlier-resistant P90 ignores 500c spike (<150c)", recT.p90 and recT.p90 < 150)
+    AssertTrue("Sniper preset has wider margin than Quick", recT.presets[3].netRoiPct > recT.presets[1].netRoiPct)
+    local badPlan = NS.Analytics.EvaluateTargetPlan(distHist, 100, 102, 7, baseNow)
+    AssertTrue("Evaluator catches loss after 5% AH cut (102*0.95 < 100)", badPlan.netProfit < 0)
+
     NS.DB:DeleteCharacterGroup("_TestGroup_")
 
     if failed == 0 then
