@@ -97,7 +97,7 @@ if ($needCode) {
         if ($fName -eq "MarketFeedData.lua") { continue }
         # Basic path-traversal safety check: only single-segment .lua/.toc filenames
         if ($fName -notmatch '^[A-Za-z0-9_\-\.]+\.(lua|toc)$') { continue }
-        $fileUrl = "$rawBase/addon/ForeverMarketWatch/$fName?t=$bust"
+        $fileUrl = "$rawBase/addon/ForeverMarketWatch/${fName}?t=$bust"
         $dest = Join-Path $addonDir $fName
         Download-FileAtomic $fileUrl $dest
         $updatedCount++
