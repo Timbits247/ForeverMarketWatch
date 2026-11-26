@@ -278,9 +278,10 @@ function NS.RunSelfTests()
     local lotusMatches = NS.Catalog.Search("lotus", 10)
     AssertTrue("Catalog search finds Black Lotus", #lotusMatches >= 1)
 
-    -- 3. Item link & ID parsing
+    -- 3. Item link & ID parsing (both Classic |cff... and modern 1.60.1/12.x |cnIQ...: links)
     AssertEq("ParseItemID numeric", NS.Compat.ParseItemID("13444"), 13444)
     AssertEq("ParseItemID link", NS.Compat.ParseItemID("|cffffffff|Hitem:13468::::::::60:::::::|h[Black Lotus]|h|r"), 13468)
+    AssertEq("ParseItemID modern cnIQ link", NS.Compat.ParseItemID("|cnIQ2:|Hitem:13468::::::::60:::::::|h[Black Lotus]|h|r"), 13468)
 
     -- 4. Moving average calculation
     local pts = {

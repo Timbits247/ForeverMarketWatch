@@ -272,7 +272,7 @@ local function HandleSlashCommand(msg)
         end
     elseif cmd == "repair" then
         local stats = NS.DB:RebuildAccountingFromLedger(true)
-        NS.Print(string.format("Accounting rebuilt: purged %d duplicate mail buy rows, replayed %d trades cleanly.", stats.purged or 0, stats.replayed or 0))
+        NS.Print(string.format("Accounting rebuilt: purged %d duplicate mail rows, replayed %d trades cleanly.", stats.purged or 0, stats.replayed or 0))
     elseif cmd == "test" then
         if NS.RunSelfTests then
             NS.RunSelfTests()

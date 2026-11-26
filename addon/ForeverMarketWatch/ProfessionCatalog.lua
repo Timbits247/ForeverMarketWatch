@@ -379,7 +379,8 @@ function Catalog.SearchPlayerBags(query, limit)
         return results
     end
 
-    for bag = 0, 4 do
+    local maxBag = NUM_BAG_SLOTS or 4
+    for bag = 0, maxBag do
         local slots = getNumSlots(bag) or 0
         for slot = 1, slots do
             local itemID = getItemID(bag, slot)

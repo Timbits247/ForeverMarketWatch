@@ -41,10 +41,16 @@ local function EnsureShiftClickHook()
         return false
     end
 
-    if hooksecurefunc and ChatEdit_InsertLink then
-        hooksecurefunc("ChatEdit_InsertLink", function(text)
-            TryInsertIntoAddBox(text)
-        end)
+    if hooksecurefunc then
+        if ChatFrameUtil and ChatFrameUtil.InsertLink then
+            hooksecurefunc(ChatFrameUtil, "InsertLink", function(text)
+                TryInsertIntoAddBox(text)
+            end)
+        elseif ChatEdit_InsertLink then
+            hooksecurefunc("ChatEdit_InsertLink", function(text)
+                TryInsertIntoAddBox(text)
+            end)
+        end
     end
 end
 
@@ -313,7 +319,8 @@ local function CreateTargetsPopover()
     local cardW = 104
     local cardGap = 8
     for i = 1, 3 do
-        local btn = CreateFrame("Button", nil, pop, "BackdropTemplate")
+        local cardTemplate = BackdropTemplateMixin and "BackdropTemplate" or nil
+        local btn = CreateFrame("Button", nil, pop, cardTemplate)
         btn:SetSize(cardW, 66)
         btn:SetPoint("TOPLEFT", pop, "TOPLEFT", 12 + (i - 1) * (cardW + cardGap), -95)
         if btn.SetBackdrop then

@@ -6,7 +6,7 @@
 local ADDON_NAME, NS = ...
 
 NS.ADDON_NAME = ADDON_NAME
-NS.VERSION = "2.5.0"
+NS.VERSION = "2.5.1"
 NS.SCHEMA_VERSION = 6
 
 -- Classic WoW Auction House visual palette (warm parchment/stone + gold/bronze)
@@ -149,6 +149,13 @@ function NS.Compat.RequestLoadItemDataByID(itemID)
 end
 
 function NS.Compat.GetQualityColor(quality)
+    if C_Item and C_Item.GetItemQualityColor and quality ~= nil then
+        local r, g, b, hex = C_Item.GetItemQualityColor(quality)
+        if r and g and b then
+            local prefixHex = (type(hex) == "string" and (hex:sub(1, 2) == "|c" and hex or ("|c" .. hex))) or "|cFFFFFFFF"
+            return r, g, b, prefixHex
+        end
+    end
     if ITEM_QUALITY_COLORS and quality ~= nil and ITEM_QUALITY_COLORS[quality] then
         local c = ITEM_QUALITY_COLORS[quality]
         return c.r or 1, c.g or 1, c.b or 1, c.hex or "|cFFFFFFFF"

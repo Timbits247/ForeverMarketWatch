@@ -727,13 +727,16 @@ end
 -- Quick "Post" / Sell My Inventory Helper + Owned Auction Undercut Scanner
 --------------------------------------------------------------------------------
 
+local fmwAuctionatorSource = { name = "ForeverMarketWatch" }
+
 local function FindItemInPlayerBags(targetItemID)
     if not targetItemID then return nil, nil end
     local numSlotsFn = (C_Container and C_Container.GetContainerNumSlots) or GetContainerNumSlots
     local getIDFn = (C_Container and C_Container.GetContainerItemID) or GetContainerItemID
     if not numSlotsFn or not getIDFn then return nil, nil end
 
-    for bag = 0, 4 do
+    local maxBag = NUM_BAG_SLOTS or 4
+    for bag = 0, maxBag do
         local slots = numSlotsFn(bag) or 0
         for slot = 1, slots do
             if getIDFn(bag, slot) == targetItemID then
@@ -793,26 +796,56 @@ function Scanner:JumpToSellItemInAH(itemID, sellInfo)
 
     local bag, slot = FindItemInPlayerBags(itemID)
 
-    -- 1. Preferred: Jump straight to Auctionator's Selling tab
+    -- 1. Preferred: Jump straight to Auctionator's Selling tab (matches ModernAH Hooks.lua)
     if AuctionatorTabs_Selling then
         local ok = pcall(function()
+            if AuctionHouseFrame.ItemSellFrame and AuctionHouseFrame.ItemSellFrame.SetItem then
+                AuctionHouseFrame.ItemSellFrame:SetItem(nil, nil, false)
+            end
+            if AuctionHouseFrame.CommoditiesSellFrame and AuctionHouseFrame.CommoditiesSellFrame.SetItem then
+                AuctionHouseFrame.CommoditiesSellFrame:SetItem(nil, nil, false)
+            end
+
             AuctionatorTabs_Selling:Click()
+
             if bag ~= nil and slot ~= nil and ItemLocation and ItemLocation.CreateFromBagAndSlot then
                 local loc = ItemLocation:CreateFromBagAndSlot(bag, slot)
                 if Auctionator and Auctionator.EventBus and Auctionator.Selling and Auctionator.Selling.Events and Auctionator.Selling.Events.BagItemClicked then
-                    local link = (C_Container and C_Container.GetContainerItemLink and C_Container.GetContainerItemLink(bag, slot)) or nil
-                    local info = (C_Container and C_Container.GetContainerItemInfo and C_Container.GetContainerItemInfo(bag, slot)) or nil
-                    Auctionator.EventBus:Fire({ name = "ForeverMarketWatch" }, Auctionator.Selling.Events.BagItemClicked, {
-                        itemLink   = link,
-                        itemID     = itemID,
-                        location   = loc,
-                        count      = (info and info.stackCount) or 1,
-                        iconTexture = (info and info.iconFileID) or NS.Compat.GetItemIconByID(itemID),
-                        itemName   = itemName,
-                        quality    = (info and info.quality) or 1,
-                        classId    = 0,
-                        auctionable = true,
-                    })
+                    Auctionator.EventBus:RegisterSource(fmwAuctionatorSource, "ForeverMarketWatch")
+                    local link = (C_Item and C_Item.GetItemLink and C_Item.GetItemLink(loc))
+                        or (C_Container and C_Container.GetContainerItemLink and C_Container.GetContainerItemLink(bag, slot))
+                        or nil
+
+                    if link and AuctionatorBagCacheFrame and AuctionatorBagCacheFrame.CacheLinkInfo
+                        and Auctionator.Groups and Auctionator.Groups.Utilities and Auctionator.Groups.Utilities.ToPostingItem
+                    then
+                        AuctionatorBagCacheFrame:CacheLinkInfo(link, function()
+                            local postInfo = Auctionator.Groups.Utilities.ToPostingItem(AuctionatorBagCacheFrame:GetByLinkInstant(link, true))
+                            if postInfo then
+                                postInfo.itemLink = link
+                                postInfo.location = loc
+                                if C_AuctionHouse and C_AuctionHouse.GetAvailablePostCount then
+                                    postInfo.count = C_AuctionHouse.GetAvailablePostCount(loc)
+                                end
+                                Auctionator.EventBus:Fire(fmwAuctionatorSource, Auctionator.Selling.Events.BagItemClicked, postInfo)
+                            end
+                        end)
+                    else
+                        local cInfo = (C_Container and C_Container.GetContainerItemInfo and C_Container.GetContainerItemInfo(bag, slot)) or nil
+                        local avail = (C_AuctionHouse and C_AuctionHouse.GetAvailablePostCount and C_AuctionHouse.GetAvailablePostCount(loc))
+                            or (cInfo and cInfo.stackCount) or 1
+                        Auctionator.EventBus:Fire(fmwAuctionatorSource, Auctionator.Selling.Events.BagItemClicked, {
+                            itemLink    = link,
+                            itemID      = itemID,
+                            location    = loc,
+                            count       = avail,
+                            iconTexture = (cInfo and cInfo.iconFileID) or NS.Compat.GetItemIconByID(itemID),
+                            itemName    = itemName,
+                            quality     = (cInfo and cInfo.quality) or 1,
+                            classId     = 0,
+                            auctionable = true,
+                        })
+                    end
                 end
             end
         end)
@@ -822,13 +855,22 @@ function Scanner:JumpToSellItemInAH(itemID, sellInfo)
         end
     end
 
-    -- 2. Fallback (Blizzard native Sell tab)
+    -- 2. Fallback (Blizzard native Sell tab + auto-populate item slot)
     if AuctionHouseFrame.SetDisplayMode and AuctionHouseFrameDisplayMode then
         local maxStack = (C_Item and C_Item.GetItemMaxStackSizeByID and C_Item.GetItemMaxStackSizeByID(itemID)) or 1
-        local mode = (maxStack > 1 and AuctionHouseFrameDisplayMode.CommoditiesSell) or AuctionHouseFrameDisplayMode.ItemSell
+        local isComm = (maxStack > 1)
+        local mode = isComm and AuctionHouseFrameDisplayMode.CommoditiesSell or AuctionHouseFrameDisplayMode.ItemSell
         if mode then
             pcall(function()
                 AuctionHouseFrame:SetDisplayMode(mode)
+                if bag ~= nil and slot ~= nil and ItemLocation and ItemLocation.CreateFromBagAndSlot then
+                    local loc = ItemLocation:CreateFromBagAndSlot(bag, slot)
+                    if isComm and AuctionHouseFrame.CommoditiesSellFrame and AuctionHouseFrame.CommoditiesSellFrame.SetItem then
+                        AuctionHouseFrame.CommoditiesSellFrame:SetItem(loc)
+                    elseif not isComm and AuctionHouseFrame.ItemSellFrame and AuctionHouseFrame.ItemSellFrame.SetItem then
+                        AuctionHouseFrame.ItemSellFrame:SetItem(loc)
+                    end
+                end
             end)
         end
     end
