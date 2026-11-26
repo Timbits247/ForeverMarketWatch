@@ -363,18 +363,14 @@ function Analytics.Compute7DayAverage(itemHist, nowTs)
     return math.floor((sum / count) + 0.5)
 end
 
-function Analytics.GetLatestPoint(itemHist)
+-- Zero-allocation scalar reader for tight whole-AH loops: returns ts, min, avg, max, qty
+local function GetLatestScalars(itemHist)
     if type(itemHist) ~= "table" then return nil end
     local intraday = itemHist.intraday
     if type(intraday) == "table" and #intraday > 0 then
         local last = intraday[#intraday]
-        return {
-            ts  = last[1],
-            min = last[2],
-            avg = last[3] or last[2],
-            max = last[4] or last[2],
-            qty = last[5] or 0,
-        }
+        local m = last[2]
+        return last[1], m, last[3] or m, last[4] or m, last[5] or 0
     end
     local daily = itemHist.daily
     if type(daily) == "table" then
@@ -386,16 +382,23 @@ function Analytics.GetLatestPoint(itemHist)
         end
         if bestKey then
             local d = daily[bestKey]
-            return {
-                ts  = NS.TimestampFromDayKey(bestKey),
-                min = d[4] or d[1],
-                avg = d[2] or d[1],
-                max = d[3] or d[1],
-                qty = d[5] or 0,
-            }
+            local m = d[4] or d[1]
+            return NS.TimestampFromDayKey(bestKey), m, d[2] or d[1], d[3] or d[1], d[5] or 0
         end
     end
     return nil
+end
+
+function Analytics.GetLatestPoint(itemHist)
+    local ts, minP, avgP, maxP, qty = GetLatestScalars(itemHist)
+    if not ts and not minP then return nil end
+    return {
+        ts  = ts,
+        min = minP,
+        avg = avgP,
+        max = maxP,
+        qty = qty,
+    }
 end
 
 function Analytics.EvaluateAlert(latestMin, buyTarget, sellTarget)
@@ -411,38 +414,110 @@ function Analytics.EvaluateAlert(latestMin, buyTarget, sellTarget)
     return "NONE"
 end
 
+-- Reusable scratch map for zero-allocation 30D daily-bucket minimum checks
+local scratchDayMin = {}
+
+local function IsAt30DayLowFast(itemHist, latestMin, now)
+    local cutoff30 = now - (30 * 86400)
+    local daily = itemHist.daily
+    if type(daily) == "table" then
+        for dayKey, d in pairs(daily) do
+            local v = d[1]
+            if v and v > 0 and NS.TimestampFromDayKey(dayKey) >= cutoff30 then
+                scratchDayMin[dayKey] = v
+            end
+        end
+    end
+    local intraday = itemHist.intraday
+    if type(intraday) == "table" then
+        for i = 1, #intraday do
+            local pt = intraday[i]
+            local ts = pt[1]
+            local v = pt[2]
+            if ts and ts >= cutoff30 and v and v > 0 then
+                local dk = NS.DayKeyFromTimestamp(ts)
+                local cur = scratchDayMin[dk]
+                if not cur or v < cur then
+                    scratchDayMin[dk] = v
+                end
+            end
+        end
+    end
+
+    local cnt, minVal, maxVal = 0, nil, nil
+    for k, v in pairs(scratchDayMin) do
+        scratchDayMin[k] = nil
+        cnt = cnt + 1
+        if not minVal or v < minVal then minVal = v end
+        if not maxVal or v > maxVal then maxVal = v end
+    end
+    return cnt >= 2 and minVal ~= nil and (maxVal > minVal) and (latestMin <= minVal)
+end
+
 -- Checks whether an item's latest price is at its lowest point over the given timeframe
 -- ("1D" = 24h, "7D" = 7 days, "30D" = 30 days).
 -- Requires at least 2 samples in the window and actual price movement (periodHigh > periodLow)
 -- so single-scan or flat items don't produce false "buy the dip" alerts.
 function Analytics.IsAtPeriodLow(itemHist, timeframe, nowTs)
     if type(itemHist) ~= "table" then return false end
-    local latest = Analytics.GetLatestPoint(itemHist)
-    if not latest or not latest.min or latest.min <= 0 then
+    local latestTs, latestMin = GetLatestScalars(itemHist)
+    if not latestMin or latestMin <= 0 then
         return false
     end
 
     local now = nowTs or (time and time()) or 0
     local days = TIMEFRAME_DAYS[timeframe]
-    if days and latest.ts and (now - latest.ts) > (days * 86400) then
+    if days and latestTs and (now - latestTs) > (days * 86400) then
         return false -- Latest scan is stale outside the window
     end
 
-    local series
     if timeframe == "1D" then
         -- 24h Low always checks the true rolling 24-hour window (not just since 00:00 midnight)
-        series = {}
         local cutoff24 = now - 86400
-        local intraday = itemHist.intraday or {}
+        local intraday = itemHist.intraday
+        if type(intraday) ~= "table" then return false end
+        local cnt, minVal, maxVal = 0, nil, nil
         for i = 1, #intraday do
             local pt = intraday[i]
-            if pt[1] >= cutoff24 and pt[2] and pt[2] > 0 then
-                table.insert(series, { ts = pt[1], min = pt[2] })
+            local v = pt[2]
+            if pt[1] and pt[1] >= cutoff24 and v and v > 0 then
+                cnt = cnt + 1
+                if not minVal or v < minVal then minVal = v end
+                if not maxVal or v > maxVal then maxVal = v end
             end
         end
-    else
-        series = Analytics.BuildSeries(itemHist, timeframe, now)
+        return cnt >= 2 and minVal ~= nil and (maxVal > minVal) and (latestMin <= minVal)
+    elseif timeframe == "7D" then
+        local cutoff7 = now - (7 * 86400)
+        local cnt, minVal, maxVal = 0, nil, nil
+        local intraday = itemHist.intraday
+        if type(intraday) == "table" then
+            for i = 1, #intraday do
+                local pt = intraday[i]
+                local v = pt[2]
+                if pt[1] and pt[1] >= cutoff7 and v and v > 0 then
+                    cnt = cnt + 1
+                    if not minVal or v < minVal then minVal = v end
+                    if not maxVal or v > maxVal then maxVal = v end
+                end
+            end
+        end
+        if cnt == 0 and type(itemHist.daily) == "table" then
+            for dayKey, d in pairs(itemHist.daily) do
+                local v = d[1]
+                if v and v > 0 and NS.TimestampFromDayKey(dayKey) >= cutoff7 then
+                    cnt = cnt + 1
+                    if not minVal or v < minVal then minVal = v end
+                    if not maxVal or v > maxVal then maxVal = v end
+                end
+            end
+        end
+        return cnt >= 2 and minVal ~= nil and (maxVal > minVal) and (latestMin <= minVal)
+    elseif timeframe == "30D" then
+        return IsAt30DayLowFast(itemHist, latestMin, now)
     end
+
+    local series = Analytics.BuildSeries(itemHist, timeframe, now)
     if #series < 2 then
         return false
     end
@@ -455,7 +530,7 @@ function Analytics.IsAtPeriodLow(itemHist, timeframe, nowTs)
         if v > maxVal then maxVal = v end
     end
 
-    return (maxVal > minVal) and (latest.min <= minVal)
+    return (maxVal > minVal) and (latestMin <= minVal)
 end
 
 function Analytics.CheckPeriodLows(itemHist, nowTs)
@@ -463,6 +538,187 @@ function Analytics.CheckPeriodLows(itemHist, nowTs)
         low24h = Analytics.IsAtPeriodLow(itemHist, "1D", nowTs),
         low7d  = Analytics.IsAtPeriodLow(itemHist, "7D", nowTs),
         low30d = Analytics.IsAtPeriodLow(itemHist, "30D", nowTs),
+    }
+end
+
+-- Fast zero-series ticker row evaluator with early filter rejection for Whole-AH / Watchlist scans.
+-- Avoids allocating point series, moving averages, or summary tables for filtered-out items.
+function Analytics.GetWatchlistRowSummary(itemID, watchEntry, itemHist, filterMode, nowTs, cutRateOverride)
+    local now = nowTs or (time and time()) or 0
+    local cutRate = cutRateOverride or Analytics.GetAHCutRate()
+    local mode = filterMode or "NONE"
+
+    local inv = (itemID and NS.DB and NS.DB:GetInvestment(itemID)) or nil
+    local investQty = (inv and inv.qty and inv.qty > 0) and inv.qty or 0
+    if mode == "INVEST" and investQty <= 0 then
+        return nil
+    end
+
+    local latestTs, latestMin, latestAvg, _, latestQty = GetLatestScalars(itemHist)
+    latestQty = latestQty or 0
+
+    local buyTarget = watchEntry and watchEntry.buyTarget or nil
+    local sellTarget = watchEntry and watchEntry.sellTarget or nil
+    local alert = Analytics.EvaluateAlert(latestMin, buyTarget, sellTarget)
+    if mode == "ALERTS" and alert ~= "BUY" and alert ~= "SELL" then
+        return nil
+    end
+
+    if not latestMin or latestMin <= 0 then
+        if mode == "FLIPS" or mode == "24H" or mode == "7D" or mode == "30D" then
+            return nil
+        end
+        return {
+            latestMin           = nil,
+            latestQty           = 0,
+            delta7dPct          = nil,
+            swing7dPct          = nil,
+            estRoiPct           = nil,
+            snipeRoiPct         = nil,
+            bestFlipRoiPct      = nil,
+            isDipFlip           = false,
+            isSnipeFlip         = false,
+            isHotFlip           = false,
+            investment          = inv,
+            investQty           = investQty,
+            investUnrealizedPnL = nil,
+            investUnrealizedPct = nil,
+            alert               = alert,
+            low24h              = false,
+            low7d               = false,
+            low30d              = false,
+        }
+    end
+
+    -- Single numeric pass over 7D intraday (with daily fallback) for 24h & 7d metrics
+    local cutoff24 = now - 86400
+    local cutoff7d = now - (7 * 86400)
+    local sum7d, count7d, low7dMin, high7dMin = 0, 0, nil, nil
+    local count24h, low24hMin, high24hMin = 0, nil, nil
+
+    local intraday = itemHist and itemHist.intraday
+    if type(intraday) == "table" then
+        for i = 1, #intraday do
+            local pt = intraday[i]
+            local ts = pt[1]
+            local v = pt[2]
+            if ts and ts >= cutoff7d and v and v > 0 then
+                sum7d = sum7d + v
+                count7d = count7d + 1
+                if not low7dMin or v < low7dMin then low7dMin = v end
+                if not high7dMin or v > high7dMin then high7dMin = v end
+                if ts >= cutoff24 then
+                    count24h = count24h + 1
+                    if not low24hMin or v < low24hMin then low24hMin = v end
+                    if not high24hMin or v > high24hMin then high24hMin = v end
+                end
+            end
+        end
+    end
+
+    if count7d == 0 and itemHist and type(itemHist.daily) == "table" then
+        for dayKey, d in pairs(itemHist.daily) do
+            local v = d[1]
+            if v and v > 0 and NS.TimestampFromDayKey(dayKey) >= cutoff7d then
+                sum7d = sum7d + v
+                count7d = count7d + 1
+                if not low7dMin or v < low7dMin then low7dMin = v end
+                if not high7dMin or v > high7dMin then high7dMin = v end
+            end
+        end
+    end
+
+    local avg7d = (count7d > 0) and math.floor((sum7d / count7d) + 0.5) or nil
+    local ob = (itemHist and type(itemHist.orderBook) == "table") and itemHist.orderBook or nil
+    local wallQty = ob and ob.wallQty or nil
+    local wallNextPrice = ob and ob.nextPrice or nil
+
+    local estNetProfit, estRoiPct, isDipFlip = nil, nil, false
+    if avg7d and avg7d > 0 then
+        estNetProfit = math.floor((avg7d * (1 - cutRate)) - latestMin + 0.5)
+        estRoiPct = (estNetProfit / latestMin) * 100
+        if count7d >= 2 and estRoiPct >= 15 and estNetProfit >= 200 then
+            isDipFlip = true
+        end
+    end
+
+    local snipeNetProfit, snipeRoiPct, isSnipeFlip = nil, nil, false
+    if latestAvg and latestAvg > latestMin and latestQty >= 5 then
+        local conservativeTarget = latestAvg
+        if wallNextPrice and wallNextPrice > latestMin and wallNextPrice < conservativeTarget then
+            conservativeTarget = wallNextPrice
+        end
+        snipeNetProfit = math.floor((conservativeTarget * (1 - cutRate)) - latestMin + 0.5)
+        snipeRoiPct = (snipeNetProfit / latestMin) * 100
+        local thinWall = (not wallQty) or (wallQty < latestQty and wallQty <= math.max(30, math.floor(latestQty * 0.45)))
+        if thinWall and snipeRoiPct >= 20 and snipeNetProfit >= 200 then
+            isSnipeFlip = true
+        end
+    end
+
+    local isHotFlip = isSnipeFlip or isDipFlip
+    if mode == "FLIPS" and not isHotFlip then
+        return nil
+    end
+
+    local fresh24h = (not latestTs) or ((now - latestTs) <= 86400)
+    local low24h = fresh24h and count24h >= 2 and low24hMin ~= nil and (high24hMin > low24hMin) and (latestMin <= low24hMin)
+    if mode == "24H" and not low24h then
+        return nil
+    end
+
+    local fresh7d = (not latestTs) or ((now - latestTs) <= (7 * 86400))
+    local low7d = fresh7d and count7d >= 2 and low7dMin ~= nil and (high7dMin > low7dMin) and (latestMin <= low7dMin)
+    if mode == "7D" and not low7d then
+        return nil
+    end
+
+    local low30d = false
+    local fresh30d = (not latestTs) or ((now - latestTs) <= (30 * 86400))
+    if fresh30d and (not low7dMin or latestMin <= low7dMin) then
+        low30d = IsAt30DayLowFast(itemHist, latestMin, now)
+    end
+    if mode == "30D" and not low30d then
+        return nil
+    end
+
+    local delta7dPct = (avg7d and avg7d > 0) and (((latestMin - avg7d) / avg7d) * 100) or nil
+    local swing7dPct = (count7d >= 2 and low7dMin and low7dMin > 0) and (((high7dMin - low7dMin) / low7dMin) * 100) or nil
+
+    local bestFlipRoiPct = estRoiPct
+    if isSnipeFlip and (not bestFlipRoiPct or (snipeRoiPct and snipeRoiPct > bestFlipRoiPct)) then
+        bestFlipRoiPct = snipeRoiPct
+    end
+
+    local investUnrealizedPnL, investUnrealizedPct = nil, nil
+    if investQty > 0 and inv.avgCost and inv.avgCost > 0 then
+        local netVal = math.floor((investQty * latestMin) * (1 - cutRate) + 0.5)
+        local cost = inv.totalCost or (investQty * inv.avgCost)
+        investUnrealizedPnL = netVal - cost
+        if cost > 0 then
+            investUnrealizedPct = (investUnrealizedPnL / cost) * 100
+        end
+    end
+
+    return {
+        latestMin           = latestMin,
+        latestQty           = latestQty,
+        delta7dPct          = delta7dPct,
+        swing7dPct          = swing7dPct,
+        estRoiPct           = estRoiPct,
+        snipeRoiPct         = snipeRoiPct,
+        bestFlipRoiPct      = bestFlipRoiPct,
+        isDipFlip           = isDipFlip,
+        isSnipeFlip         = isSnipeFlip,
+        isHotFlip           = isHotFlip,
+        investment          = inv,
+        investQty           = investQty,
+        investUnrealizedPnL = investUnrealizedPnL,
+        investUnrealizedPct = investUnrealizedPct,
+        alert               = alert,
+        low24h              = low24h,
+        low7d               = low7d,
+        low30d              = low30d,
     }
 end
 

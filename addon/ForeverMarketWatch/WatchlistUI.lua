@@ -19,6 +19,14 @@ local selectedTimeframe = nil
 local selectedChartMode = nil
 local showCraftCostOverlay = true
 local activeMountHost = nil
+local requestedItemInfo = {}
+local WATCHLIST_ROW_HEIGHT = 42
+
+local function RequestItemMetadataOnce(itemID)
+    if not itemID or requestedItemInfo[itemID] then return end
+    requestedItemInfo[itemID] = true
+    NS.Compat.RequestLoadItemDataByID(itemID)
+end
 
 --------------------------------------------------------------------------------
 -- Shift-Click Item Link Capture (Only When Search/Add Input Has Focus)
@@ -1443,7 +1451,9 @@ function UI.GetOrCreateMainView()
     -- Row 1: Profession Group Dropdown + Groups Button + Sort Dropdown
     local groupDropdown = NS.CreateDropdown(leftPane, 118, 22, function(val)
         selectedGroupFilter = val
+        if root._scrollFrame then root._scrollFrame:SetVerticalScroll(0) end
         UI.RefreshWatchlist()
+        UI.RefreshDetail()
         UI.RefreshActionButtons()
     end)
     groupDropdown:SetPoint("TOPLEFT", leftPane, "TOPLEFT", 8, -8)
@@ -1739,8 +1749,10 @@ function UI.GetOrCreateMainView()
                     NS.DB:GetSettings().defaultTimeframe = spec.syncTf
                 end
             end
+            if root._scrollFrame then root._scrollFrame:SetVerticalScroll(0) end
             UI.RefreshWatchlist()
             UI.RefreshDetail()
+            UI.RefreshActionButtons()
         end)
         lowButtons[spec.id] = b
         prevLowBtn = b
@@ -1819,9 +1831,15 @@ function UI.GetOrCreateMainView()
     scrollChild:SetHeight(1)
     scrollFrame:SetScrollChild(scrollChild)
 
-    scrollFrame:SetScript("OnSizeChanged", function(_, w)
+    scrollFrame:HookScript("OnVerticalScroll", function()
+        UI.RenderVisibleWatchlistRows()
+    end)
+    scrollFrame:HookScript("OnSizeChanged", function(_, w)
         if w and w > 40 then
             scrollChild:SetWidth(w)
+        end
+        if mainView and mainView:IsShown() and selectedPage == "MARKET" then
+            UI.RenderVisibleWatchlistRows()
         end
     end)
 
@@ -2250,8 +2268,9 @@ function UI.GetOrCreateMainView()
         end
     end)
 
-    -- Refresh metadata (debounced) as WoW finishes loading item icons/names for watched & whole-AH items
+    -- Refresh metadata lightly (never re-scans 7,500 AH items!) as WoW loads visible item icons/names
     local pendingMetaRefresh = false
+    local pendingMetaSelected = false
     local itemInfoFrame = CreateFrame("Frame")
     itemInfoFrame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
     itemInfoFrame:SetScript("OnEvent", function(_, _, itemID, success)
@@ -2260,30 +2279,62 @@ function UI.GetOrCreateMainView()
         local hist = NS.DB:GetItemHistory(itemID)
         if not entry and not hist then return end
 
+        local liveName, _, liveQual, _, _, _, _, _, _, liveIcon = NS.Compat.GetItemInfo(itemID)
         if entry then
             NS.DB:RefreshItemMetadata(itemID, entry)
         end
-        if hist then
-            local liveName, _, liveQual, _, _, _, _, _, _, liveIcon = NS.Compat.GetItemInfo(itemID)
-            if liveName then
-                hist.name = liveName
-                hist.quality = liveQual
-                hist.icon = liveIcon
-            end
+        if hist and liveName then
+            hist.name = liveName
+            hist.quality = liveQual
+            hist.icon = liveIcon
         end
 
-        if mainView and mainView:IsShown() and not pendingMetaRefresh then
+        local inFiltered = false
+        if mainView and mainView._filteredItemsByID and mainView._filteredItemsByID[itemID] then
+            local data = mainView._filteredItemsByID[itemID]
+            if liveName and data.entry then
+                data.entry.name = liveName
+                if liveQual ~= nil then data.entry.quality = liveQual end
+                if liveIcon then data.entry.icon = liveIcon end
+                data.sortName = liveName:lower()
+                data.nameResolved = true
+            end
+            inFiltered = true
+        end
+
+        if itemID == selectedItemID then
+            pendingMetaSelected = true
+        end
+
+        if not mainView or not mainView:IsShown() then return end
+        if selectedPage == "MARKET" and not inFiltered and itemID ~= selectedItemID then
+            return
+        end
+
+        if not pendingMetaRefresh then
             pendingMetaRefresh = true
-            if C_Timer and C_Timer.After then
-                C_Timer.After(0.25, function()
-                    pendingMetaRefresh = false
-                    if mainView and mainView:IsShown() then
-                        UI.RefreshAll()
-                    end
-                end)
-            else
+            local function DoLightMetaUpdate()
                 pendingMetaRefresh = false
-                UI.RefreshAll()
+                local refreshSel = pendingMetaSelected
+                pendingMetaSelected = false
+                if not mainView or not mainView:IsShown() then return end
+                if selectedPage == "MARKET" then
+                    UI.RenderVisibleWatchlistRows()
+                    if refreshSel then
+                        UI.RefreshDetail()
+                    end
+                elseif selectedPage == "DASHBOARD" and mainView._dashboardPage then
+                    mainView._dashboardPage:Refresh()
+                elseif selectedPage == "FLIPPING" and mainView._flippingPage then
+                    mainView._flippingPage:Refresh()
+                elseif selectedPage == "INVENTORY" and mainView._inventoryPage then
+                    mainView._inventoryPage:Refresh()
+                end
+            end
+            if C_Timer and C_Timer.After then
+                C_Timer.After(0.25, DoLightMetaUpdate)
+            else
+                DoLightMetaUpdate()
             end
         end
     end)
@@ -2423,323 +2474,176 @@ function UI.RefreshActionButtons()
     mainView._searchAHBtn:SetTextLabel(ahOpen and "Search AH" or "Search")
 end
 
-function UI.RefreshWatchlist()
-    if not mainView then return end
+local function GetOrCreateTickerRow(child, rows, poolIdx)
+    local row = rows[poolIdx]
+    if row then return row end
 
-    -- Highlight active Low-filter button
-    if mainView._lowButtons then
-        for id, btn in pairs(mainView._lowButtons) do
-            btn:SetActiveState(id == selectedLowFilter)
-        end
-    end
+    row = CreateFrame("Button", nil, child)
+    row:SetHeight(WATCHLIST_ROW_HEIGHT - 1)
 
-    local market = NS.DB:GetActiveMarket()
-    local watchlist = market.watchlist or {}
-    local allHistory = market.history or {}
-    local items = {}
+    local bg = row:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    row.bg = bg
 
-    -- Whole-AH mode: when viewing 'Flips' (with All/Entire AH) or 'Entire AH' group,
-    -- scan EVERY item synced from Blizzard's API across the entire Auction House!
-    local scanWholeAH = (selectedGroupFilter == "ENTIRE_AH")
-        or (selectedLowFilter == "FLIPS" and selectedGroupFilter == "All")
-        or (selectedLowFilter == "INVEST")
+    -- Classic WoW AH golden highlight bar
+    local hl = row:CreateTexture(nil, "ARTWORK")
+    hl:SetAllPoints()
+    hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+    hl:SetBlendMode("ADD")
+    hl:SetAlpha(0)
+    row.hl = hl
 
-    local function BuildEntryForItem(itemID)
-        local w = watchlist[itemID]
-        if w then return w, true end
-        local h = allHistory[itemID]
-        local liveName, _, liveQual, _, _, _, _, _, _, liveIcon = NS.Compat.GetItemInfo(itemID)
-        if not liveName then
-            NS.Compat.RequestLoadItemDataByID(itemID)
-        end
-        local name = liveName or (h and h.name) or ("Item #" .. tostring(itemID))
-        local icon = liveIcon or (h and h.icon) or NS.Compat.GetItemIconByID(itemID) or 134400
-        local quality = (liveQual ~= nil) and liveQual or ((h and h.quality) or 1)
-        if h and liveName then
-            h.name = liveName
-            h.icon = icon
-            h.quality = quality
-        end
-        return {
-            itemID  = itemID,
-            name    = name,
-            icon    = icon,
-            quality = quality,
-            group   = "AH Market",
-        }, false
-    end
+    local accentBar = row:CreateTexture(nil, "OVERLAY")
+    accentBar:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+    accentBar:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
+    accentBar:SetWidth(3)
+    row.accentBar = accentBar
 
-    local sourceIDs = {}
-    local seenID = {}
-    if scanWholeAH then
-        for itemID in pairs(allHistory) do
-            seenID[itemID] = true
-            table.insert(sourceIDs, itemID)
-        end
-        for itemID in pairs(watchlist) do
-            if not seenID[itemID] then
-                seenID[itemID] = true
-                table.insert(sourceIDs, itemID)
-            end
-        end
-        if selectedLowFilter == "INVEST" and market.investments then
-            for itemID in pairs(market.investments) do
-                if not seenID[itemID] then
-                    seenID[itemID] = true
-                    table.insert(sourceIDs, itemID)
-                end
-            end
-        end
-    else
-        for itemID in pairs(watchlist) do
-            table.insert(sourceIDs, itemID)
-        end
-    end
+    -- Classic slot border around item icon
+    local iconBg = row:CreateTexture(nil, "BORDER")
+    iconBg:SetSize(30, 30)
+    iconBg:SetPoint("LEFT", row, "LEFT", 6, 0)
+    iconBg:SetColorTexture(0.45, 0.36, 0.22, 0.9)
 
-    for idx = 1, #sourceIDs do
-        local itemID = sourceIDs[idx]
-        local entry, isWatched = BuildEntryForItem(itemID)
-        local hist = allHistory[itemID]
-        local summary = NS.Analytics.GetItemSummary(entry, hist, selectedTimeframe)
+    local icon = row:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(28, 28)
+    icon:SetPoint("CENTER", iconBg, "CENTER", 0, 0)
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    row.icon = icon
 
-        local include = true
-        if selectedGroupFilter == "Alerts Only" then
-            include = isWatched and (summary.alert == "BUY" or summary.alert == "SELL")
-        elseif selectedGroupFilter ~= "All" and selectedGroupFilter ~= "ENTIRE_AH" then
-            include = isWatched and (entry.group == selectedGroupFilter)
-        end
+    local nameTxt = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    nameTxt:SetPoint("TOPLEFT", iconBg, "TOPRIGHT", 6, -1)
+    nameTxt:SetPoint("RIGHT", row, "RIGHT", -104, 0)
+    nameTxt:SetJustifyH("LEFT")
+    nameTxt:SetWordWrap(false)
+    row.nameTxt = nameTxt
 
-        if include and selectedLowFilter ~= "NONE" then
-            if selectedLowFilter == "FLIPS" then
-                include = summary.isHotFlip
-            elseif selectedLowFilter == "24H" then
-                include = summary.low24h
-            elseif selectedLowFilter == "7D" then
-                include = summary.low7d
-            elseif selectedLowFilter == "30D" then
-                include = summary.low30d
-            elseif selectedLowFilter == "INVEST" then
-                include = (summary.investQty and summary.investQty > 0)
-            end
-        end
+    local subTxt = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    subTxt:SetPoint("BOTTOMLEFT", iconBg, "BOTTOMRIGHT", 6, 1)
+    subTxt:SetPoint("RIGHT", row, "RIGHT", -104, 0)
+    subTxt:SetJustifyH("LEFT")
+    subTxt:SetWordWrap(false)
+    row.subTxt = subTxt
 
-        if include then
-            table.insert(items, {
-                itemID    = itemID,
-                entry     = entry,
-                isWatched = isWatched,
-                summary   = summary,
-            })
-        end
-    end
+    local priceTxt = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    priceTxt:SetPoint("TOPRIGHT", row, "TOPRIGHT", -20, -6)
+    priceTxt:SetJustifyH("RIGHT")
+    row.priceTxt = priceTxt
 
-    -- Update clickable column header sort indicators
-    if mainView._hdrNameBtn then
-        if selectedSort == "name_asc" then
-            mainView._hdrNameBtn.txt:SetText("Item ^")
-        elseif selectedSort == "name_desc" then
-            mainView._hdrNameBtn.txt:SetText("Item v")
+    local deltaTxt = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    deltaTxt:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -20, 6)
+    deltaTxt:SetJustifyH("RIGHT")
+    row.deltaTxt = deltaTxt
+
+    local delBtn = CreateFrame("Button", nil, row)
+    delBtn:SetSize(16, 16)
+    delBtn:SetPoint("RIGHT", row, "RIGHT", -2, 0)
+    local delTxt = delBtn:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    delTxt:SetPoint("CENTER")
+    delTxt:SetText("x")
+    delBtn.txt = delTxt
+    delBtn:SetScript("OnEnter", function(s) s.txt:SetTextColor(0.96, 0.35, 0.33, 1) end)
+    delBtn:SetScript("OnLeave", function(s) s.txt:SetTextColor(0.65, 0.58, 0.48, 1) end)
+    delBtn:SetScript("OnClick", function(s)
+        local parentRow = s:GetParent()
+        if not parentRow or not parentRow._itemID then return end
+        if parentRow._isWatched then
+            NS.DB:RemoveWatchItem(parentRow._itemID)
         else
-            mainView._hdrNameBtn.txt:SetText("Item")
-        end
-    end
-    if mainView._hdrPriceBtn then
-        if selectedSort == "price_desc" then
-            mainView._hdrPriceBtn.txt:SetText("Min Buyout v")
-        elseif selectedSort == "price_asc" then
-            mainView._hdrPriceBtn.txt:SetText("Min Buyout ^")
-        else
-            mainView._hdrPriceBtn.txt:SetText("Min Buyout")
-        end
-    end
-    if mainView._hdrTrendBtn then
-        mainView._hdrTrendBtn.txt:SetText(selectedSort == "delta" and "7D ^" or "7D")
-    end
-
-    table.sort(items, function(a, b)
-        local aName = (a.entry.name or ""):lower()
-        local bName = (b.entry.name or ""):lower()
-
-        local effectiveSort = (selectedLowFilter == "FLIPS" and selectedSort == "name_asc") and "roi_desc" or selectedSort
-
-        if effectiveSort == "roi_desc" then
-            local ar = a.summary.bestFlipRoiPct or -999999
-            local br = b.summary.bestFlipRoiPct or -999999
-            if ar ~= br then return ar > br end
-            return aName < bName
-        elseif effectiveSort == "swing_desc" then
-            local as = a.summary.swing7dPct or -1
-            local bs = b.summary.swing7dPct or -1
-            if as ~= bs then return as > bs end
-            return aName < bName
-        elseif effectiveSort == "name_asc" or effectiveSort == "name" then
-            if aName ~= bName then return aName < bName end
-            return a.itemID < b.itemID
-        elseif selectedSort == "name_desc" then
-            if aName ~= bName then return aName > bName end
-            return a.itemID > b.itemID
-        elseif selectedSort == "price_desc" or selectedSort == "price" then
-            local ap = a.summary.latestMin or -1
-            local bp = b.summary.latestMin or -1
-            if ap ~= bp then return ap > bp end
-            return aName < bName
-        elseif selectedSort == "price_asc" then
-            local aHas = a.summary.latestMin ~= nil
-            local bHas = b.summary.latestMin ~= nil
-            if aHas ~= bHas then return aHas end -- Priced items always sort before unscanned '--' items
-            if aHas and a.summary.latestMin ~= b.summary.latestMin then
-                return a.summary.latestMin < b.summary.latestMin
-            end
-            return aName < bName
-        elseif selectedSort == "alerts" then
-            local aRank = (a.summary.alert ~= "NONE") and 0 or 1
-            local bRank = (b.summary.alert ~= "NONE") and 0 or 1
-            if aRank ~= bRank then return aRank < bRank end
-            local aHas = a.summary.latestMin and 0 or 1
-            local bHas = b.summary.latestMin and 0 or 1
-            if aHas ~= bHas then return aHas < bHas end
-            return aName < bName
-        elseif selectedSort == "delta" then
-            local ad = a.summary.delta7dPct or 999999
-            local bd = b.summary.delta7dPct or 999999
-            if ad ~= bd then return ad < bd end
-            return aName < bName
-        else
-            return aName < bName
+            local e = parentRow._entry
+            NS.DB:AddWatchItem(parentRow._itemID, nil, e and e.name, e and e.icon, e and e.quality)
         end
     end)
+    row.delBtn = delBtn
 
-    local selectedInFiltered = false
-    for i = 1, #items do
-        if items[i].itemID == selectedItemID then
-            selectedInFiltered = true
-            break
+    row:SetScript("OnEnter", function(self)
+        self.hl:SetAlpha(0.55)
+        if self._itemID and mainView and mainView._matsHoverCard and NS.Arbitrage and NS.Arbitrage.GetRecipeForProduct(self._itemID) then
+            mainView._matsHoverCard:ShowForCraftedItem(self, self._itemID, selectedTimeframe)
         end
-    end
-    local selectedValid = selectedItemID and (watchlist[selectedItemID] ~= nil or allHistory[selectedItemID] ~= nil)
-    if not selectedValid or (selectedLowFilter ~= "NONE" and not selectedInFiltered) then
-        selectedItemID = (#items > 0) and items[1].itemID or nil
+    end)
+    row:SetScript("OnLeave", function(self)
+        self:ApplyRowBg()
+        if mainView and mainView._matsHoverCard then
+            mainView._matsHoverCard:Hide()
+        end
+    end)
+    row:SetScript("OnClick", function(self)
+        if not self._itemID or self._itemID == selectedItemID then return end
+        selectedItemID = self._itemID
+        UI.RenderVisibleWatchlistRows()
+        UI.RefreshDetail()
+        UI.RefreshActionButtons()
+    end)
+
+    function row:ApplyRowBg()
+        local isSel = (self._itemID == selectedItemID)
+        local c = isSel and NS.COLORS.BG_ROW_SEL or (((self._index % 2) == 0) and NS.COLORS.BG_ROW_ALT or NS.COLORS.BG_ROW)
+        self.bg:SetColorTexture(c[1], c[2], c[3], c[4])
+        self.hl:SetAlpha(isSel and 0.35 or 0)
     end
 
-    -- Cap visible rows at 250 when browsing the Entire AH so UI stays silky smooth at 60 FPS
-    local visibleCount = math.min(#items, 250)
-    local rowH = 42
-    local child = mainView._scrollChild
+    rows[poolIdx] = row
+    return row
+end
+
+-- Virtualized viewport renderer: binds only the ~16 visible rows on screen (zero 7,500-row lag!)
+function UI.RenderVisibleWatchlistRows()
+    if not mainView or not mainView._scrollFrame or not mainView._scrollChild then return end
+    local items = mainView._filteredItems or {}
+    local total = #items
     local rows = mainView._tickerRows
+    local child = mainView._scrollChild
+    local sf = mainView._scrollFrame
+    local rowH = WATCHLIST_ROW_HEIGHT
 
-    mainView._emptyListText:SetShown(#items == 0)
-    if #items == 0 then
-        if selectedLowFilter == "INVEST" then
-            mainView._emptyListText:SetText("No explicit investments logged yet.\n\nSelect any item and click 'Invest' to log lots across all your alts (personal gear/bags are never mixed in).")
-        elseif selectedLowFilter == "FLIPS" then
-            mainView._emptyListText:SetText("No mispriced flips (+20% live undercut or +15% 7D dip after 5% AH cut) right now.\n\nTry /fmw demo or wait for next 5-min API sync.")
-        elseif selectedLowFilter ~= "NONE" then
-            mainView._emptyListText:SetText("No items currently at a " .. selectedLowFilter .. " low.\n\nRequires at least 2 scans with price movement.\nClick 'All' or run /fmw demo to preview.")
-        else
-            mainView._emptyListText:SetText("No items in this view.\n\nUse the Search box above, drag from bags,\nor click Settings -> Restore Profession Mats.")
+    if total == 0 then
+        for i = 1, #rows do
+            rows[i]:Hide()
         end
+        return
     end
 
-    for i = 1, visibleCount do
+    local scrollOffset = math.max(0, sf:GetVerticalScroll() or 0)
+    local viewH = math.max(180, sf:GetHeight() or 420)
+    local firstIdx = math.max(1, math.floor(scrollOffset / rowH))
+    local lastIdx = math.min(total, math.ceil((scrollOffset + viewH) / rowH) + 2)
+    if firstIdx > lastIdx then
+        firstIdx = math.max(1, total - 15)
+        lastIdx = total
+    end
+
+    local poolIdx = 0
+    for i = firstIdx, lastIdx do
+        poolIdx = poolIdx + 1
         local data = items[i]
         local entry = data.entry
         local sum = data.summary
-        local row = rows[i]
+        local row = GetOrCreateTickerRow(child, rows, poolIdx)
 
-        if not row then
-            row = CreateFrame("Button", nil, child)
-            row:SetHeight(rowH - 1)
-
-            local bg = row:CreateTexture(nil, "BACKGROUND")
-            bg:SetAllPoints()
-            row.bg = bg
-
-            -- Classic WoW AH golden highlight bar
-            local hl = row:CreateTexture(nil, "ARTWORK")
-            hl:SetAllPoints()
-            hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
-            hl:SetBlendMode("ADD")
-            hl:SetAlpha(0)
-            row.hl = hl
-
-            local accentBar = row:CreateTexture(nil, "OVERLAY")
-            accentBar:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
-            accentBar:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
-            accentBar:SetWidth(3)
-            row.accentBar = accentBar
-
-            -- Classic slot border around item icon
-            local iconBg = row:CreateTexture(nil, "BORDER")
-            iconBg:SetSize(30, 30)
-            iconBg:SetPoint("LEFT", row, "LEFT", 6, 0)
-            iconBg:SetColorTexture(0.45, 0.36, 0.22, 0.9)
-
-            local icon = row:CreateTexture(nil, "ARTWORK")
-            icon:SetSize(28, 28)
-            icon:SetPoint("CENTER", iconBg, "CENTER", 0, 0)
-            icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-            row.icon = icon
-
-            local nameTxt = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            nameTxt:SetPoint("TOPLEFT", iconBg, "TOPRIGHT", 6, -1)
-            nameTxt:SetPoint("RIGHT", row, "RIGHT", -104, 0)
-            nameTxt:SetJustifyH("LEFT")
-            nameTxt:SetWordWrap(false)
-            row.nameTxt = nameTxt
-
-            local subTxt = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-            subTxt:SetPoint("BOTTOMLEFT", iconBg, "BOTTOMRIGHT", 6, 1)
-            subTxt:SetPoint("RIGHT", row, "RIGHT", -104, 0)
-            subTxt:SetJustifyH("LEFT")
-            subTxt:SetWordWrap(false)
-            row.subTxt = subTxt
-
-            local priceTxt = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            priceTxt:SetPoint("TOPRIGHT", row, "TOPRIGHT", -20, -6)
-            priceTxt:SetJustifyH("RIGHT")
-            row.priceTxt = priceTxt
-
-            local deltaTxt = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            deltaTxt:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -20, 6)
-            deltaTxt:SetJustifyH("RIGHT")
-            row.deltaTxt = deltaTxt
-
-            local delBtn = CreateFrame("Button", nil, row)
-            delBtn:SetSize(16, 16)
-            delBtn:SetPoint("RIGHT", row, "RIGHT", -2, 0)
-            local delTxt = delBtn:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-            delTxt:SetPoint("CENTER")
-            delTxt:SetText("x")
-            delBtn.txt = delTxt
-            delBtn:SetScript("OnEnter", function(s) s.txt:SetTextColor(0.96, 0.35, 0.33, 1) end)
-            delBtn:SetScript("OnLeave", function(s) s.txt:SetTextColor(0.65, 0.58, 0.48, 1) end)
-            row.delBtn = delBtn
-
-            row:SetScript("OnEnter", function(self)
-                self.hl:SetAlpha(0.55)
-                if self._itemID and mainView and mainView._matsHoverCard and NS.Arbitrage and NS.Arbitrage.GetRecipeForProduct(self._itemID) then
-                    mainView._matsHoverCard:ShowForCraftedItem(self, self._itemID, selectedTimeframe)
+        -- Lazily resolve item name/icon ONLY for rows scrolled into view
+        if not data.nameResolved then
+            local liveName, _, liveQual, _, _, _, _, _, _, liveIcon = NS.Compat.GetItemInfo(data.itemID)
+            if liveName then
+                entry.name = liveName
+                if liveQual ~= nil then entry.quality = liveQual end
+                if liveIcon then entry.icon = liveIcon end
+                data.nameResolved = true
+                local h = NS.DB:GetItemHistory(data.itemID)
+                if h then
+                    h.name = liveName
+                    h.quality = entry.quality
+                    h.icon = entry.icon
                 end
-            end)
-            row:SetScript("OnLeave", function(self)
-                self:ApplyRowBg()
-                if mainView and mainView._matsHoverCard then
-                    mainView._matsHoverCard:Hide()
-                end
-            end)
-
-            function row:ApplyRowBg()
-                local isSel = (self._itemID == selectedItemID)
-                local c = isSel and NS.COLORS.BG_ROW_SEL or (((self._index % 2) == 0) and NS.COLORS.BG_ROW_ALT or NS.COLORS.BG_ROW)
-                self.bg:SetColorTexture(c[1], c[2], c[3], c[4])
-                self.hl:SetAlpha(isSel and 0.35 or 0)
+            else
+                RequestItemMetadataOnce(data.itemID)
             end
-
-            rows[i] = row
         end
 
         row._itemID = data.itemID
         row._index = i
+        row._isWatched = data.isWatched
+        row._entry = entry
         row:ClearAllPoints()
         row:SetPoint("TOPLEFT", child, "TOPLEFT", 0, -((i - 1) * rowH))
         row:SetPoint("TOPRIGHT", child, "TOPRIGHT", 0, -((i - 1) * rowH))
@@ -2784,38 +2688,265 @@ function UI.RefreshWatchlist()
             row.subTxt:SetText(string.format("%s  Qty:%d%s", entry.group or "", sum.latestQty or 0, alertTag))
         end
 
-        -- Full Gold/Silver/Copper price display
         row.priceTxt:SetText(sum.latestMin and NS.FormatMoney(sum.latestMin, false) or "|cFF8A7E6B--|r")
         row.deltaTxt:SetText(FormatDeltaBadge(sum.delta7dPct))
-
-        row:SetScript("OnClick", function()
-            selectedItemID = data.itemID
-            UI.RefreshWatchlist()
-            UI.RefreshDetail()
-            UI.RefreshActionButtons()
-        end)
-
-        if data.isWatched then
-            row.delBtn.txt:SetText("x")
-            row.delBtn:SetScript("OnClick", function()
-                NS.DB:RemoveWatchItem(data.itemID)
-            end)
-        else
-            -- Unwatched AH market item: '+' pins it straight to your watchlist!
-            row.delBtn.txt:SetText("+")
-            row.delBtn:SetScript("OnClick", function()
-                NS.DB:AddWatchItem(data.itemID, "Flipping", entry.name, entry.icon, entry.quality)
-            end)
-        end
-
+        row.delBtn.txt:SetText(data.isWatched and "x" or "+")
         row:Show()
     end
 
-    for i = visibleCount + 1, #rows do
+    for i = poolIdx + 1, #rows do
         rows[i]:Hide()
     end
+end
 
-    child:SetHeight(math.max(1, visibleCount * rowH))
+function UI.RefreshWatchlist()
+    if not mainView then return end
+
+    -- Highlight active Low-filter button
+    if mainView._lowButtons then
+        for id, btn in pairs(mainView._lowButtons) do
+            btn:SetActiveState(id == selectedLowFilter)
+        end
+    end
+
+    local market = NS.DB:GetActiveMarket()
+    local watchlist = market.watchlist or {}
+    local allHistory = market.history or {}
+    local investments = market.investments or {}
+    local now = (time and time()) or 0
+    local cutRate = NS.Analytics.GetAHCutRate()
+    local items = {}
+    local itemsByID = {}
+
+    -- Whole-AH mode: when viewing 'Flips' (with All/Entire AH) or 'Entire AH' group,
+    -- scan EVERY item synced from Blizzard's API across the entire Auction House!
+    local scanWholeAH = (selectedGroupFilter == "ENTIRE_AH")
+        or (selectedLowFilter == "FLIPS" and selectedGroupFilter == "All")
+
+    -- Builds display entry ONLY for items that already passed filtering (never spams server requests!)
+    local function BuildEntryForMatchedItem(itemID, deferUncachedLookup)
+        local w = watchlist[itemID]
+        if w then
+            local resolved = (type(w.name) == "string" and not w.name:find("^Item #"))
+            return w, true, resolved
+        end
+        local h = allHistory[itemID]
+        if h and h.name and h.icon then
+            return {
+                itemID  = itemID,
+                name    = h.name,
+                icon    = h.icon,
+                quality = h.quality or 1,
+                group   = "AH Market",
+            }, false, true
+        end
+        local catSpec = NS.Catalog and NS.Catalog.BY_ID and NS.Catalog.BY_ID[itemID]
+        local liveName, liveQual, liveIcon
+        if not deferUncachedLookup then
+            local n, _, q, _, _, _, _, _, _, ic = NS.Compat.GetItemInfo(itemID)
+            liveName, liveQual, liveIcon = n, q, ic
+        end
+        local name = liveName or (h and h.name) or (catSpec and catSpec[2]) or ("Item #" .. tostring(itemID))
+        local icon = liveIcon or (h and h.icon) or NS.Compat.GetItemIconByID(itemID) or 134400
+        local quality = (liveQual ~= nil) and liveQual or ((h and h.quality) or (catSpec and catSpec[4]) or 1)
+        if h and liveName then
+            h.name = liveName
+            h.icon = icon
+            h.quality = quality
+        end
+        local resolved = (liveName ~= nil) or (catSpec ~= nil) or (h and h.name ~= nil) or false
+        return {
+            itemID  = itemID,
+            name    = name,
+            icon    = icon,
+            quality = quality,
+            group   = "AH Market",
+        }, false, resolved
+    end
+
+    local function EvaluateCandidate(itemID, deferUncachedLookup)
+        local w = watchlist[itemID]
+        if selectedGroupFilter == "Alerts Only" then
+            if not w or ((not w.buyTarget or w.buyTarget <= 0) and (not w.sellTarget or w.sellTarget <= 0)) then
+                return
+            end
+        elseif selectedGroupFilter ~= "All" and selectedGroupFilter ~= "ENTIRE_AH" then
+            if not w or w.group ~= selectedGroupFilter then
+                return
+            end
+        end
+
+        local hist = allHistory[itemID]
+        local filterMode = selectedLowFilter
+        if selectedGroupFilter == "Alerts Only" and filterMode == "NONE" then
+            filterMode = "ALERTS"
+        end
+
+        local summary = NS.Analytics.GetWatchlistRowSummary(itemID, w, hist, filterMode, now, cutRate)
+        if not summary then return end
+        if selectedGroupFilter == "Alerts Only" and summary.alert ~= "BUY" and summary.alert ~= "SELL" then
+            return
+        end
+
+        local entry, isWatched, resolved = BuildEntryForMatchedItem(itemID, deferUncachedLookup)
+        local rec = {
+            itemID       = itemID,
+            entry        = entry,
+            isWatched    = isWatched,
+            summary      = summary,
+            sortName     = (entry.name or ""):lower(),
+            nameResolved = resolved,
+        }
+        items[#items + 1] = rec
+        itemsByID[itemID] = rec
+    end
+
+    if selectedLowFilter == "INVEST" then
+        -- Fast path: only items with active investments can ever match INVEST
+        for itemID, inv in pairs(investments) do
+            if inv and (inv.qty or 0) > 0 then
+                EvaluateCandidate(itemID, false)
+            end
+        end
+    elseif scanWholeAH then
+        local deferLookup = (selectedGroupFilter == "ENTIRE_AH" and selectedLowFilter == "NONE")
+        local seenID = {}
+        for itemID in pairs(allHistory) do
+            seenID[itemID] = true
+            EvaluateCandidate(itemID, deferLookup)
+        end
+        for itemID in pairs(watchlist) do
+            if not seenID[itemID] then
+                EvaluateCandidate(itemID, false)
+            end
+        end
+    else
+        for itemID in pairs(watchlist) do
+            EvaluateCandidate(itemID, false)
+        end
+    end
+
+    -- Update clickable column header sort indicators
+    if mainView._hdrNameBtn then
+        if selectedSort == "name_asc" then
+            mainView._hdrNameBtn.txt:SetText("Item ^")
+        elseif selectedSort == "name_desc" then
+            mainView._hdrNameBtn.txt:SetText("Item v")
+        else
+            mainView._hdrNameBtn.txt:SetText("Item")
+        end
+    end
+    if mainView._hdrPriceBtn then
+        if selectedSort == "price_desc" then
+            mainView._hdrPriceBtn.txt:SetText("Min Buyout v")
+        elseif selectedSort == "price_asc" then
+            mainView._hdrPriceBtn.txt:SetText("Min Buyout ^")
+        else
+            mainView._hdrPriceBtn.txt:SetText("Min Buyout")
+        end
+    end
+    if mainView._hdrTrendBtn then
+        mainView._hdrTrendBtn.txt:SetText(selectedSort == "delta" and "7D ^" or "7D")
+    end
+
+    local effectiveSort = (selectedLowFilter == "FLIPS" and selectedSort == "name_asc") and "roi_desc" or selectedSort
+
+    table.sort(items, function(a, b)
+        local aName = a.sortName
+        local bName = b.sortName
+
+        if effectiveSort == "roi_desc" then
+            local ar = a.summary.bestFlipRoiPct or -999999
+            local br = b.summary.bestFlipRoiPct or -999999
+            if ar ~= br then return ar > br end
+            if aName ~= bName then return aName < bName end
+            return a.itemID < b.itemID
+        elseif effectiveSort == "swing_desc" then
+            local as = a.summary.swing7dPct or -1
+            local bs = b.summary.swing7dPct or -1
+            if as ~= bs then return as > bs end
+            if aName ~= bName then return aName < bName end
+            return a.itemID < b.itemID
+        elseif effectiveSort == "name_asc" or effectiveSort == "name" then
+            if aName ~= bName then return aName < bName end
+            return a.itemID < b.itemID
+        elseif selectedSort == "name_desc" then
+            if aName ~= bName then return aName > bName end
+            return a.itemID > b.itemID
+        elseif selectedSort == "price_desc" or selectedSort == "price" then
+            local ap = a.summary.latestMin or -1
+            local bp = b.summary.latestMin or -1
+            if ap ~= bp then return ap > bp end
+            if aName ~= bName then return aName < bName end
+            return a.itemID < b.itemID
+        elseif selectedSort == "price_asc" then
+            local aHas = a.summary.latestMin ~= nil
+            local bHas = b.summary.latestMin ~= nil
+            if aHas ~= bHas then return aHas end -- Priced items always sort before unscanned '--' items
+            if aHas and a.summary.latestMin ~= b.summary.latestMin then
+                return a.summary.latestMin < b.summary.latestMin
+            end
+            if aName ~= bName then return aName < bName end
+            return a.itemID < b.itemID
+        elseif selectedSort == "alerts" then
+            local aRank = (a.summary.alert ~= "NONE") and 0 or 1
+            local bRank = (b.summary.alert ~= "NONE") and 0 or 1
+            if aRank ~= bRank then return aRank < bRank end
+            local aHas = a.summary.latestMin and 0 or 1
+            local bHas = b.summary.latestMin and 0 or 1
+            if aHas ~= bHas then return aHas < bHas end
+            if aName ~= bName then return aName < bName end
+            return a.itemID < b.itemID
+        elseif selectedSort == "delta" then
+            local ad = a.summary.delta7dPct or 999999
+            local bd = b.summary.delta7dPct or 999999
+            if ad ~= bd then return ad < bd end
+            if aName ~= bName then return aName < bName end
+            return a.itemID < b.itemID
+        else
+            if aName ~= bName then return aName < bName end
+            return a.itemID < b.itemID
+        end
+    end)
+
+    mainView._filteredItems = items
+    mainView._filteredItemsByID = itemsByID
+
+    local selectedInFiltered = (selectedItemID ~= nil and itemsByID[selectedItemID] ~= nil)
+    local selectedValid = selectedItemID and (watchlist[selectedItemID] ~= nil or allHistory[selectedItemID] ~= nil)
+    if not selectedValid or (selectedLowFilter ~= "NONE" and not selectedInFiltered) then
+        selectedItemID = (#items > 0) and items[1].itemID or nil
+    end
+
+    local rowH = WATCHLIST_ROW_HEIGHT
+    local child = mainView._scrollChild
+    local sf = mainView._scrollFrame
+    local totalHeight = math.max(1, #items * rowH)
+    child:SetHeight(totalHeight)
+
+    -- Clamp scroll position if new filtered list is shorter than previous scroll offset
+    if sf then
+        local viewH = math.max(180, sf:GetHeight() or 420)
+        local maxScroll = math.max(0, totalHeight - viewH)
+        if (sf:GetVerticalScroll() or 0) > maxScroll then
+            sf:SetVerticalScroll(maxScroll)
+        end
+    end
+
+    mainView._emptyListText:SetShown(#items == 0)
+    if #items == 0 then
+        if selectedLowFilter == "INVEST" then
+            mainView._emptyListText:SetText("No explicit investments logged yet.\n\nSelect any item and click 'Invest' to log lots across all your alts (personal gear/bags are never mixed in).")
+        elseif selectedLowFilter == "FLIPS" then
+            mainView._emptyListText:SetText("No mispriced flips (+20% live undercut or +15% 7D dip after 5% AH cut) right now.\n\nTry /fmw demo or wait for next API sync.")
+        elseif selectedLowFilter ~= "NONE" then
+            mainView._emptyListText:SetText("No items currently at a " .. selectedLowFilter .. " low.\n\nRequires at least 2 scans with price movement.\nClick 'All' or run /fmw demo to preview.")
+        else
+            mainView._emptyListText:SetText("No items in this view.\n\nUse the Search box above, drag from bags,\nor click Settings -> Restore Profession Mats.")
+        end
+    end
+
+    UI.RenderVisibleWatchlistRows()
 
     local marketTag = NS.DB:GetActiveMarketKey()
     if NS.DB:IsDemoMode() then
@@ -2845,11 +2976,15 @@ function UI.RefreshDetail()
     local hist = selectedItemID and NS.DB:GetItemHistory(selectedItemID) or nil
     if not entry and selectedItemID and hist then
         local liveName, _, liveQual, _, _, _, _, _, _, liveIcon = NS.Compat.GetItemInfo(selectedItemID)
+        local catSpec = NS.Catalog and NS.Catalog.BY_ID and NS.Catalog.BY_ID[selectedItemID]
+        if not liveName and not hist.name and not catSpec then
+            RequestItemMetadataOnce(selectedItemID)
+        end
         entry = {
             itemID  = selectedItemID,
-            name    = liveName or hist.name or ("Item #" .. tostring(selectedItemID)),
+            name    = liveName or hist.name or (catSpec and catSpec[2]) or ("Item #" .. tostring(selectedItemID)),
             icon    = liveIcon or hist.icon or NS.Compat.GetItemIconByID(selectedItemID) or 134400,
-            quality = (liveQual ~= nil) and liveQual or (hist.quality or 1),
+            quality = (liveQual ~= nil) and liveQual or (hist.quality or (catSpec and catSpec[4]) or 1),
             group   = "AH Market",
         }
     end

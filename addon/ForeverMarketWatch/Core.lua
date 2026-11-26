@@ -6,7 +6,7 @@
 local ADDON_NAME, NS = ...
 
 NS.ADDON_NAME = ADDON_NAME
-NS.VERSION = "2.5.1"
+NS.VERSION = "2.5.2"
 NS.SCHEMA_VERSION = 6
 
 -- Classic WoW Auction House visual palette (warm parchment/stone + gold/bronze)
@@ -360,16 +360,41 @@ function NS.FormatRelativeTime(timestamp, now)
     end
 end
 
+local dayKeyCache = {}
+local dayKeyCacheCount = 0
+local dayTsCache = {}
+local dayTsCacheCount = 0
+
 function NS.DayKeyFromTimestamp(ts)
+    if not ts then return 0 end
+    local cached = dayKeyCache[ts]
+    if cached then return cached end
     local d = date("*t", ts)
-    return (d.year * 10000) + (d.month * 100) + d.day
+    local key = (d.year * 10000) + (d.month * 100) + d.day
+    if dayKeyCacheCount >= 8192 then
+        dayKeyCache = {}
+        dayKeyCacheCount = 0
+    end
+    dayKeyCache[ts] = key
+    dayKeyCacheCount = dayKeyCacheCount + 1
+    return key
 end
 
 function NS.TimestampFromDayKey(dayKey)
+    if not dayKey then return 0 end
+    local cached = dayTsCache[dayKey]
+    if cached then return cached end
     local year = math.floor(dayKey / 10000)
     local month = math.floor((dayKey % 10000) / 100)
     local day = dayKey % 100
-    return time({ year = year, month = month, day = day, hour = 12, min = 0, sec = 0 })
+    local ts = time({ year = year, month = month, day = day, hour = 12, min = 0, sec = 0 })
+    if dayTsCacheCount >= 2048 then
+        dayTsCache = {}
+        dayTsCacheCount = 0
+    end
+    dayTsCache[dayKey] = ts
+    dayTsCacheCount = dayTsCacheCount + 1
+    return ts
 end
 
 --------------------------------------------------------------------------------

@@ -565,6 +565,39 @@ function NS.RunSelfTests()
     local badPlan = NS.Analytics.EvaluateTargetPlan(distHist, 100, 102, 7, baseNow)
     AssertTrue("Evaluator catches loss after 5% AH cut (102*0.95 < 100)", badPlan.netProfit < 0)
 
+    -- 20. Fast Zero-Series GetWatchlistRowSummary Parity & Filter Early-Exit
+    local flipHist = {
+        intraday = {
+            { baseNow - 86400 * 3, 1200, 1250, 1300, 40 },
+            { baseNow - 86400 * 2, 1180, 1220, 1280, 45 },
+            { baseNow - 3600 * 4,  1150, 1200, 1260, 50 },
+            { baseNow - 60,        700,  1180, 1250, 55 },
+        },
+        daily = {
+            [NS.DayKeyFromTimestamp(baseNow - 86400 * 15)] = { 1100, 1150, 1250, 1120, 35, 4 },
+        },
+        orderBook = { wallQty = 4, wallCost = 2800, nextPrice = 1150 },
+        lastScan = baseNow - 60,
+    }
+    local fullFlip = NS.Analytics.GetItemSummary({ itemID = 99901, buyTarget = 750 }, flipHist, "30D", baseNow)
+    local fastFlip = NS.Analytics.GetWatchlistRowSummary(99901, { itemID = 99901, buyTarget = 750 }, flipHist, "FLIPS", baseNow, 0.05)
+    AssertTrue("Fast row summary matches hot flip", fastFlip ~= nil and fastFlip.isHotFlip == fullFlip.isHotFlip)
+    AssertEq("Fast row summary matches 24h low", fastFlip and fastFlip.low24h, fullFlip.low24h)
+    AssertEq("Fast row summary matches 7d low", fastFlip and fastFlip.low7d, fullFlip.low7d)
+    AssertEq("Fast row summary matches 30d low", fastFlip and fastFlip.low30d, fullFlip.low30d)
+    AssertEq("Fast row summary matches BUY alert", fastFlip and fastFlip.alert, "BUY")
+
+    local flatHist = {
+        intraday = {
+            { baseNow - 3600, 500, 500, 500, 20 },
+            { baseNow - 60,   500, 500, 500, 20 },
+        },
+        daily = {},
+        lastScan = baseNow - 60,
+    }
+    AssertEq("Fast row summary early-rejects non-flip as nil", NS.Analytics.GetWatchlistRowSummary(99902, nil, flatHist, "FLIPS", baseNow, 0.05), nil)
+    AssertEq("Fast row summary early-rejects flat 30D low as nil", NS.Analytics.GetWatchlistRowSummary(99902, nil, flatHist, "30D", baseNow, 0.05), nil)
+
     NS.DB:DeleteCharacterGroup("_TestGroup_")
 
     if failed == 0 then

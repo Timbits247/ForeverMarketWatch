@@ -2979,10 +2979,33 @@ function DB:CompactItemHistory(itemHist, nowTs)
         itemHist.daily = {}
     end
 
-    table.sort(intraday, function(a, b) return a[1] < b[1] end)
+    -- Fast path: skip sorting & table copy when already chronological and within retention window
+    local n = #intraday
+    local needsSort = false
+    local hasOld = false
+    local prevTs = -1
+    for i = 1, n do
+        local ts = intraday[i][1] or 0
+        if ts < prevTs then
+            needsSort = true
+        end
+        if ts < cutoff then
+            hasOld = true
+        end
+        prevTs = ts
+    end
+    if not needsSort and not hasOld then
+        return
+    end
+    if needsSort then
+        table.sort(intraday, function(a, b) return a[1] < b[1] end)
+    end
+    if not hasOld then
+        return
+    end
 
     local kept = {}
-    for i = 1, #intraday do
+    for i = 1, n do
         local pt = intraday[i]
         local ts = pt[1]
         if ts < cutoff then
