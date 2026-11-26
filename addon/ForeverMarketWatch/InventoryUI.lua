@@ -121,7 +121,7 @@ function InventoryUI.Create(parent, onOpenItem, onEditItem, onOpenCharGroups)
 
     local searchBox, searchEB = NS.CreateEditBox(ctrlBar, 108, 22, "Filter item...")
     searchBox:SetPoint("LEFT", prevBtn, "RIGHT", 6, 0)
-    searchEB:SetScript("OnTextChanged", function(self)
+    searchEB:HookScript("OnTextChanged", function(self)
         searchText = (self:GetText() or ""):lower():match("^%s*(.-)%s*$")
         frame:Refresh()
     end)

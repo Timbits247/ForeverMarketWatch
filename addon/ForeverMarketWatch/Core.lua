@@ -6,7 +6,7 @@
 local ADDON_NAME, NS = ...
 
 NS.ADDON_NAME = ADDON_NAME
-NS.VERSION = "2.5.2"
+NS.VERSION = "2.5.3"
 NS.SCHEMA_VERSION = 6
 
 -- Classic WoW Auction House visual palette (warm parchment/stone + gold/bronze)
@@ -692,12 +692,15 @@ function NS.CreateEditBox(parent, width, height, placeholder)
 
     local function UpdatePlaceholder()
         local txt = eb:GetText() or ""
-        ph:SetShown(txt == "")
+        ph:SetShown(txt == "" and not eb:HasFocus())
     end
 
-    eb:SetScript("OnTextChanged", function()
-        UpdatePlaceholder()
-    end)
+    eb:SetScript("OnTextChanged", UpdatePlaceholder)
+    eb:HookScript("OnEditFocusGained", UpdatePlaceholder)
+    eb:HookScript("OnEditFocusLost", UpdatePlaceholder)
+    if hooksecurefunc then
+        hooksecurefunc(eb, "SetText", UpdatePlaceholder)
+    end
     eb:SetScript("OnEscapePressed", function(self)
         self:ClearFocus()
     end)

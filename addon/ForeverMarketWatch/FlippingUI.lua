@@ -203,12 +203,12 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
     local function GetOrCreateCard(idx)
         if frame._cards[idx] then return frame._cards[idx] end
         local c = NS.CreatePanel(child, nil, NS.COLORS.BG_CARD, NS.COLORS.BORDER, true)
-        c:SetSize(236, 154)
+        c:SetSize(236, 168)
 
         -- Main clickable surface (opens full chart in Market & Charts)
         local clicker = CreateFrame("Button", nil, c)
         clicker:SetPoint("TOPLEFT", c, "TOPLEFT", 0, 0)
-        clicker:SetPoint("BOTTOMRIGHT", c, "BOTTOMRIGHT", 0, 28)
+        clicker:SetPoint("BOTTOMRIGHT", c, "BOTTOMRIGHT", 0, 29)
         local hl = clicker:CreateTexture(nil, "HIGHLIGHT")
         hl:SetAllPoints()
         hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
@@ -235,12 +235,13 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
 
         local nameTxt = c:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         nameTxt:SetPoint("TOPLEFT", iconBg, "TOPRIGHT", 6, 0)
-        nameTxt:SetPoint("RIGHT", badgeTxt, "LEFT", -4, 0)
+        nameTxt:SetPoint("TOPRIGHT", badgeTxt, "TOPLEFT", -4, 1)
+        nameTxt:SetHeight(14)
         nameTxt:SetJustifyH("LEFT")
         nameTxt:SetWordWrap(false)
         c.nameTxt = nameTxt
 
-        -- Row 2: Live Price (left) + Under-Target Snipe Callout / Spread (right)
+        -- Row 2: Live Price (left) + Under-Target Snipe Callout / Holdings (right)
         local priceTxt = c:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         priceTxt:SetPoint("BOTTOMLEFT", iconBg, "BOTTOMRIGHT", 6, -1)
         priceTxt:SetJustifyH("LEFT")
@@ -255,25 +256,40 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
         local spark = NS.Chart.CreateSparkline(c)
         spark:SetPoint("TOPLEFT", c, "TOPLEFT", 8, -39)
         spark:SetPoint("TOPRIGHT", c, "TOPRIGHT", -8, -39)
-        spark:SetHeight(56)
+        spark:SetHeight(54)
         c.spark = spark
 
         -- Row 4: Volatility (7D Swing%) + Volume / Liquidity + Dip Wall Strip
         local metricsTxt = c:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        metricsTxt:SetPoint("TOPLEFT", spark, "BOTTOMLEFT", 1, -5)
-        metricsTxt:SetPoint("TOPRIGHT", spark, "BOTTOMRIGHT", -1, -5)
+        metricsTxt:SetPoint("TOPLEFT", spark, "BOTTOMLEFT", 1, -4)
+        metricsTxt:SetPoint("TOPRIGHT", spark, "BOTTOMRIGHT", -1, -4)
+        metricsTxt:SetHeight(13)
         metricsTxt:SetJustifyH("LEFT")
         metricsTxt:SetWordWrap(false)
         c.metricsTxt = metricsTxt
 
-        -- Subtle divider above action bar
+        -- Subtle divider above target & action footer
         local div = c:CreateTexture(nil, "ARTWORK")
-        div:SetPoint("BOTTOMLEFT", c, "BOTTOMLEFT", 6, 29)
-        div:SetPoint("BOTTOMRIGHT", c, "BOTTOMRIGHT", -6, 29)
+        div:SetPoint("BOTTOMLEFT", c, "BOTTOMLEFT", 6, 50)
+        div:SetPoint("BOTTOMRIGHT", c, "BOTTOMRIGHT", -6, 50)
         div:SetHeight(1)
         div:SetColorTexture(0.45, 0.38, 0.25, 0.35)
 
-        -- Row 5: Bottom Quick-Action Bar (Targets + Edit + 1-click Snipe/Buy)
+        -- Row 5A: Buy & Sell Targets (left) + Target Net Profit % after AH cut (right)
+        local targetPctTxt = c:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        targetPctTxt:SetPoint("BOTTOMRIGHT", c, "BOTTOMRIGHT", -8, 32)
+        targetPctTxt:SetJustifyH("RIGHT")
+        c.targetPctTxt = targetPctTxt
+
+        local targetsTxt = c:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        targetsTxt:SetPoint("BOTTOMLEFT", c, "BOTTOMLEFT", 8, 32)
+        targetsTxt:SetPoint("BOTTOMRIGHT", targetPctTxt, "BOTTOMLEFT", -6, 0)
+        targetsTxt:SetHeight(14)
+        targetsTxt:SetJustifyH("LEFT")
+        targetsTxt:SetWordWrap(false)
+        c.targetsTxt = targetsTxt
+
+        -- Row 5B: Per-Unit Target Net Profit (left) + Edit + 1-click Snipe/Buy (right)
         local buyBtn = NS.CreateButton(c, "Snipe", 68, 21, true)
         buyBtn:SetPoint("BOTTOMRIGHT", c, "BOTTOMRIGHT", -6, 5)
         c.buyBtn = buyBtn
@@ -282,12 +298,13 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
         editBtn:SetPoint("RIGHT", buyBtn, "LEFT", -4, 0)
         c.editBtn = editBtn
 
-        local targetsTxt = c:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        targetsTxt:SetPoint("BOTTOMLEFT", c, "BOTTOMLEFT", 8, 9)
-        targetsTxt:SetPoint("RIGHT", editBtn, "LEFT", -4, 0)
-        targetsTxt:SetJustifyH("LEFT")
-        targetsTxt:SetWordWrap(false)
-        c.targetsTxt = targetsTxt
+        local targetSubTxt = c:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        targetSubTxt:SetPoint("BOTTOMLEFT", c, "BOTTOMLEFT", 8, 9)
+        targetSubTxt:SetPoint("BOTTOMRIGHT", editBtn, "BOTTOMLEFT", -4, 4)
+        targetSubTxt:SetHeight(13)
+        targetSubTxt:SetJustifyH("LEFT")
+        targetSubTxt:SetWordWrap(false)
+        c.targetSubTxt = targetSubTxt
 
         frame._cards[idx] = c
         return c
@@ -333,9 +350,10 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
                     and NS.Analytics.ComputeUnderTargetDepth(hist, entry.buyTarget) or nil
 
                 local targetSpreadPct = nil
+                local targetNetCopper = nil
                 if entry.buyTarget and entry.buyTarget > 0 and entry.sellTarget and entry.sellTarget > 0 then
-                    local netSell = entry.sellTarget * (1 - cutRate)
-                    targetSpreadPct = ((netSell - entry.buyTarget) / entry.buyTarget) * 100
+                    targetNetCopper = math.floor((entry.sellTarget * (1 - cutRate)) - entry.buyTarget + 0.5)
+                    targetSpreadPct = (targetNetCopper / entry.buyTarget) * 100
                 end
 
                 counts.ALL = counts.ALL + 1
@@ -352,6 +370,7 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
                         sortKey         = sortKey,
                         underDepth      = underDepth,
                         targetSpreadPct = targetSpreadPct,
+                        targetNetCopper = targetNetCopper,
                         style           = ZONE_STYLES[zone] or ZONE_STYLES.MID,
                     })
                 end
@@ -404,7 +423,7 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
         local cols = (viewW >= 640) and 3 or 2
         local gap = 8
         local cardW = math.floor((viewW - gap * (cols - 1)) / cols)
-        local cardH = 154
+        local cardH = 168
 
         for i = 1, #items do
             local d = items[i]
@@ -435,7 +454,7 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
             card.badgeTxt:SetText(st.textHex .. d.badge .. "|r")
             card.priceTxt:SetText(sum.latestMin and NS.FormatMoney(sum.latestMin, true) or "|cFF998C78No Data|r")
 
-            -- Right-side Row 2 Callout: Under-Target Snipe Qty+Cost (BUY) | Held P&L (SELL) | Net Spread (MID)
+            -- Right-side Row 2 Callout: Under-Target Snipe Qty+Cost (BUY) | Held P&L | 7D Avg
             if d.zone == "BUY" then
                 if depth and depth.qty and depth.qty > 0 then
                     local prefix = depth.exact and "" or "~"
@@ -445,14 +464,11 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
                 else
                     card.snipeTxt:SetText("|cFF22EB70Scan for exact qty|r")
                 end
-            elseif d.zone == "SELL" and sum.investQty and sum.investQty > 0 then
+            elseif sum.investQty and sum.investQty > 0 then
                 card.snipeTxt:SetText(string.format("|cFFFFD100Inv %d|r %s",
                     sum.investQty, sum.investUnrealizedPnL and NS.FormatSignedMoney(sum.investUnrealizedPnL, true) or ""))
-            elseif d.targetSpreadPct ~= nil then
-                local spClr = (d.targetSpreadPct >= 15) and "|cFF38D972" or ((d.targetSpreadPct >= 5) and "|cFFFFD100" or "|cFFF55954")
-                card.snipeTxt:SetText(string.format("Spread: %s%+.0f%% net|r", spClr, d.targetSpreadPct))
-            elseif sum.investQty and sum.investQty > 0 then
-                card.snipeTxt:SetText(string.format("|cFFFFD100Holding: %d|r", sum.investQty))
+            elseif sum.avg7d and sum.avg7d > 0 then
+                card.snipeTxt:SetText("|cFFB0A48E7D: " .. NS.FormatMoney(sum.avg7d, true) .. "|r")
             else
                 card.snipeTxt:SetText("")
             end
@@ -483,7 +499,7 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
             local wallStr = (sum.wallQty and sum.wallQty > 0) and ("  |  Wall: " .. tostring(sum.wallQty)) or ""
             card.metricsTxt:SetText(swingStr .. "  |  " .. volStr .. wallStr)
 
-            -- Row 5: Bottom Targets + Snipe / Buy action button
+            -- Row 5A: Buy & Sell Targets + Target Profit % (net of AH cut)
             local tParts = {}
             if entry.buyTarget and entry.buyTarget > 0 then
                 table.insert(tParts, "|cFF22EB70B:|r" .. NS.FormatMoney(entry.buyTarget, true))
@@ -491,7 +507,25 @@ function FlippingUI.Create(parent, onOpenItem, onEditTargets)
             if entry.sellTarget and entry.sellTarget > 0 then
                 table.insert(tParts, "|cFFFF4D4DS:|r" .. NS.FormatMoney(entry.sellTarget, true))
             end
-            card.targetsTxt:SetText(table.concat(tParts, " "))
+            card.targetsTxt:SetText(table.concat(tParts, "  "))
+
+            if d.targetSpreadPct ~= nil then
+                local pctClr = (d.targetSpreadPct >= 10) and "|cFF38D972" or ((d.targetSpreadPct > 0) and "|cFFFFD100" or "|cFFF55954")
+                card.targetPctTxt:SetText(string.format("%s%+.1f%% net|r", pctClr, d.targetSpreadPct))
+            else
+                card.targetPctTxt:SetText("")
+            end
+
+            -- Row 5B: Per-Unit Target Net Profit (or Break-Even) + Edit + Snipe/Buy
+            if d.targetNetCopper ~= nil then
+                card.targetSubTxt:SetText("Net: " .. NS.FormatSignedMoney(d.targetNetCopper, true) .. "/ea")
+            elseif entry.buyTarget and entry.buyTarget > 0 then
+                card.targetSubTxt:SetText("BE: " .. NS.FormatMoney(math.ceil(entry.buyTarget / (1 - cutRate)), true))
+            elseif entry.sellTarget and entry.sellTarget > 0 then
+                card.targetSubTxt:SetText("Net: " .. NS.FormatMoney(math.floor(entry.sellTarget * (1 - cutRate) + 0.5), true))
+            else
+                card.targetSubTxt:SetText("")
+            end
 
             local buyLabel = "Buy"
             if d.zone == "BUY" then

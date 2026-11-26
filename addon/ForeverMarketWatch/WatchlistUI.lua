@@ -276,7 +276,7 @@ end
 
 local function CreateTargetsPopover()
     local pop = NS.CreatePanel(UIParent, nil, NS.COLORS.BG_DARK, NS.COLORS.BORDER_ACCENT, false)
-    pop:SetSize(352, 296)
+    pop:SetSize(408, 312)
     pop:SetFrameStrata("FULLSCREEN_DIALOG")
     pop:SetFrameLevel(200)
     pop:EnableMouse(true)
@@ -287,50 +287,54 @@ local function CreateTargetsPopover()
     local windowDays = 7
     local currentRec = nil
 
+    local w30Btn = NS.CreateButton(pop, "30D", 36, 19, false)
+    w30Btn:SetPoint("TOPRIGHT", -12, -8)
+
+    local w7Btn = NS.CreateButton(pop, "7D", 34, 19, false)
+    w7Btn:SetPoint("RIGHT", w30Btn, "LEFT", -4, 0)
+
     local title = pop:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOPLEFT", 12, -10)
-    title:SetPoint("RIGHT", pop, "RIGHT", -84, 0)
+    title:SetPoint("TOPLEFT", pop, "TOPLEFT", 12, -10)
+    title:SetPoint("TOPRIGHT", pop, "TOPRIGHT", -92, -10)
+    title:SetHeight(16)
     title:SetJustifyH("LEFT")
+    title:SetJustifyV("MIDDLE")
     title:SetWordWrap(false)
     title:SetText("Price Targets")
-
-    local w7Btn = NS.CreateButton(pop, "7D", 32, 18, false)
-    w7Btn:SetPoint("TOPRIGHT", -46, -8)
-
-    local w30Btn = NS.CreateButton(pop, "30D", 34, 18, false)
-    w30Btn:SetPoint("TOPRIGHT", -10, -8)
 
     -- 1. Market Distribution Summary Box (Median, P10-P90, Scans, Best Days)
     local statsBox = NS.CreatePanel(pop, nil, NS.COLORS.BG_CARD, NS.COLORS.BORDER, true)
     statsBox:SetPoint("TOPLEFT", 12, -32)
     statsBox:SetPoint("TOPRIGHT", -12, -32)
-    statsBox:SetHeight(40)
+    statsBox:SetHeight(42)
 
     local statsLine1 = statsBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     statsLine1:SetPoint("TOPLEFT", 8, -6)
     statsLine1:SetPoint("TOPRIGHT", -8, -6)
+    statsLine1:SetHeight(14)
     statsLine1:SetJustifyH("LEFT")
     statsLine1:SetWordWrap(false)
 
     local statsLine2 = statsBox:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     statsLine2:SetPoint("BOTTOMLEFT", 8, 6)
     statsLine2:SetPoint("BOTTOMRIGHT", -8, 6)
+    statsLine2:SetHeight(14)
     statsLine2:SetJustifyH("LEFT")
     statsLine2:SetWordWrap(false)
 
     -- 2. Three 1-Click Data-Driven Strategy Presets (Quick / Balanced / Sniper)
     local presetHdr = pop:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    presetHdr:SetPoint("TOPLEFT", 12, -78)
+    presetHdr:SetPoint("TOPLEFT", 12, -80)
     presetHdr:SetText("1-Click Suggested Targets (after 5% AH cut):")
 
     local presetCards = {}
-    local cardW = 104
-    local cardGap = 8
+    local cardW = 122
+    local cardGap = 9
     for i = 1, 3 do
         local cardTemplate = BackdropTemplateMixin and "BackdropTemplate" or nil
         local btn = CreateFrame("Button", nil, pop, cardTemplate)
-        btn:SetSize(cardW, 66)
-        btn:SetPoint("TOPLEFT", pop, "TOPLEFT", 12 + (i - 1) * (cardW + cardGap), -95)
+        btn:SetSize(cardW, 68)
+        btn:SetPoint("TOPLEFT", pop, "TOPLEFT", 12 + (i - 1) * (cardW + cardGap), -98)
         if btn.SetBackdrop then
             btn:SetBackdrop({
                 bgFile   = "Interface\\Buttons\\WHITE8x8",
@@ -351,24 +355,27 @@ local function CreateTargetsPopover()
 
         local nameFS = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         nameFS:SetPoint("TOP", 0, -6)
+        nameFS:SetWidth(cardW - 8)
+        nameFS:SetJustifyH("CENTER")
+        nameFS:SetWordWrap(false)
         btn.nameFS = nameFS
 
         local buyFS = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        buyFS:SetPoint("TOP", 0, -21)
+        buyFS:SetPoint("TOP", 0, -22)
         buyFS:SetWidth(cardW - 8)
         buyFS:SetJustifyH("CENTER")
         buyFS:SetWordWrap(false)
         btn.buyFS = buyFS
 
         local sellFS = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        sellFS:SetPoint("TOP", 0, -35)
+        sellFS:SetPoint("TOP", 0, -37)
         sellFS:SetWidth(cardW - 8)
         sellFS:SetJustifyH("CENTER")
         sellFS:SetWordWrap(false)
         btn.sellFS = sellFS
 
         local roiFS = btn:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        roiFS:SetPoint("BOTTOM", 0, 5)
+        roiFS:SetPoint("BOTTOM", 0, 6)
         roiFS:SetWidth(cardW - 8)
         roiFS:SetJustifyH("CENTER")
         roiFS:SetWordWrap(false)
@@ -377,48 +384,54 @@ local function CreateTargetsPopover()
         presetCards[i] = btn
     end
 
-    -- 3. Custom Buy / Sell Inputs
+    -- 3. Custom Buy / Sell Inputs (symmetric 2-column layout with InputBoxTemplate border clearance)
     local buyLbl = pop:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    buyLbl:SetPoint("TOPLEFT", 14, -172)
+    buyLbl:SetPoint("TOPLEFT", pop, "TOPLEFT", 12, -181)
+    buyLbl:SetWidth(48)
+    buyLbl:SetJustifyH("LEFT")
     buyLbl:SetText("Buy <=")
     buyLbl:SetTextColor(0.22, 0.85, 0.45, 1)
 
-    local buyBox, buyEB = NS.CreateEditBox(pop, 108, 22, "e.g. 75s")
-    buyBox:SetPoint("LEFT", buyLbl, "RIGHT", 6, 0)
+    local buyBox, buyEB = NS.CreateEditBox(pop, 124, 22, "e.g. 75s")
+    buyBox:SetPoint("LEFT", buyLbl, "RIGHT", 10, 0)
 
     local sellLbl = pop:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    sellLbl:SetPoint("LEFT", buyBox, "RIGHT", 12, 0)
+    sellLbl:SetPoint("TOPLEFT", pop, "TOPLEFT", 210, -181)
+    sellLbl:SetWidth(48)
+    sellLbl:SetJustifyH("LEFT")
     sellLbl:SetText("Sell >=")
     sellLbl:SetTextColor(0.96, 0.35, 0.33, 1)
 
-    local sellBox, sellEB = NS.CreateEditBox(pop, 108, 22, "e.g. 1g 10s")
-    sellBox:SetPoint("LEFT", sellLbl, "RIGHT", 6, 0)
+    local sellBox, sellEB = NS.CreateEditBox(pop, 124, 22, "e.g. 1g 10s")
+    sellBox:SetPoint("LEFT", sellLbl, "RIGHT", 10, 0)
 
     -- 4. Live Target Plan Health Bar (updates on every keystroke or preset click!)
     local evalBox = NS.CreatePanel(pop, nil, NS.COLORS.BG_PANEL, NS.COLORS.BORDER, true)
-    evalBox:SetPoint("TOPLEFT", 12, -200)
-    evalBox:SetPoint("TOPRIGHT", -12, -200)
-    evalBox:SetHeight(46)
+    evalBox:SetPoint("TOPLEFT", 12, -210)
+    evalBox:SetPoint("TOPRIGHT", -12, -210)
+    evalBox:SetHeight(48)
 
     local evalLine1 = evalBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     evalLine1:SetPoint("TOPLEFT", 8, -7)
     evalLine1:SetPoint("TOPRIGHT", -8, -7)
+    evalLine1:SetHeight(14)
     evalLine1:SetJustifyH("LEFT")
     evalLine1:SetWordWrap(false)
 
     local evalLine2 = evalBox:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     evalLine2:SetPoint("BOTTOMLEFT", 8, 7)
     evalLine2:SetPoint("BOTTOMRIGHT", -8, 7)
+    evalLine2:SetHeight(14)
     evalLine2:SetJustifyH("LEFT")
     evalLine2:SetWordWrap(false)
 
-    local saveBtn = NS.CreateButton(pop, "Save Targets", 112, 24, true)
+    local saveBtn = NS.CreateButton(pop, "Save Targets", 116, 24, true)
     saveBtn:SetPoint("BOTTOMLEFT", 12, 12)
 
-    local clearBtn = NS.CreateButton(pop, "Clear", 64, 24, false)
+    local clearBtn = NS.CreateButton(pop, "Clear", 68, 24, false)
     clearBtn:SetPoint("LEFT", saveBtn, "RIGHT", 6, 0)
 
-    local closeBtn = NS.CreateButton(pop, "Close", 64, 24, false)
+    local closeBtn = NS.CreateButton(pop, "Close", 68, 24, false)
     closeBtn:SetPoint("BOTTOMRIGHT", -12, 12)
 
     local function UpdateLiveEval()
@@ -536,8 +549,8 @@ local function CreateTargetsPopover()
         RefreshAnalytics()
     end)
 
-    buyEB:SetScript("OnTextChanged", function() UpdateLiveEval() end)
-    sellEB:SetScript("OnTextChanged", function() UpdateLiveEval() end)
+    buyEB:HookScript("OnTextChanged", function() UpdateLiveEval() end)
+    sellEB:HookScript("OnTextChanged", function() UpdateLiveEval() end)
 
     local function CommitTargets()
         if not activeItemID then return end
@@ -569,7 +582,24 @@ local function CreateTargetsPopover()
         sellEB:SetText(NS.FormatMoneyPlain(entry.sellTarget))
         RefreshAnalytics()
         self:ClearAllPoints()
-        self:SetPoint("TOPRIGHT", anchor, "BOTTOMRIGHT", 0, -4)
+        local uiW = (UIParent and UIParent:GetWidth()) or 1280
+        local ax = anchor and anchor.GetCenter and select(1, anchor:GetCenter()) or uiW
+        local ab = anchor and anchor.GetBottom and anchor:GetBottom() or 400
+        local openAbove = ab < 328
+        local alignLeft = ax < 430
+        if openAbove then
+            if alignLeft then
+                self:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", 0, 4)
+            else
+                self:SetPoint("BOTTOMRIGHT", anchor, "TOPRIGHT", 0, 4)
+            end
+        else
+            if alignLeft then
+                self:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -4)
+            else
+                self:SetPoint("TOPRIGHT", anchor, "BOTTOMRIGHT", 0, -4)
+            end
+        end
         self:SetFrameStrata("FULLSCREEN_DIALOG")
         self:SetFrameLevel(200)
         self:Show()
