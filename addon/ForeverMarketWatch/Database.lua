@@ -13,9 +13,8 @@ local INTRADAY_MERGE_WINDOW      = 300         -- Merge points <5 minutes apart
 local PASSIVE_PRUNE_DAYS         = 90          -- Prune unwatched passive history older than 90 days
 
 local DEFAULT_SETTINGS = {
-    autoScanOnOpen          = true,  -- Automatically scans AH when you open it (respects cooldown)
+    autoScanOnOpen          = false, -- Opt-in only (15m+ cooldown, skipped when Cloud API feed is fresh)
     autoScanCooldownMinutes = 15,
-    autoScanIntervalMinutes = 30,    -- Periodic auto-rescan while parked at the AH (0 = Off, 15, 30, 60)
     passiveCapture          = true,
     autoTrackLedger         = true,  -- Auto-populate Inventory & Ledger from AH purchases & mailbox sales
     announceAutoLedger      = true,  -- Print subtle chat confirmation on auto-logged AH buys/sales
@@ -68,6 +67,11 @@ function DB:Init()
         end
         if type(ForeverMarketWatchDB.settings.window) ~= "table" then
             ForeverMarketWatchDB.settings.window = DeepCopy(DEFAULT_SETTINGS.window)
+        end
+        -- Blizzard ToS hardening: purge legacy unattended periodic AH scan setting
+        ForeverMarketWatchDB.settings.autoScanIntervalMinutes = nil
+        if (tonumber(ForeverMarketWatchDB.settings.autoScanCooldownMinutes) or 0) < 15 then
+            ForeverMarketWatchDB.settings.autoScanCooldownMinutes = 15
         end
     end
 

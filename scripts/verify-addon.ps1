@@ -215,11 +215,18 @@ foreach ($f in $LuaFiles) {
         Pass "Zero dynamic code execution in $f"
     }
 
-    # Security & ToS check 2: Zero automated Auction House purchasing calls
-    if ($clean -match 'C_AuctionHouse\s*\.\s*(PlaceBid|ConfirmCommoditiesPurchase|StartCommoditiesPurchase)\s*\(') {
-        Fail "Forbidden automated C_AuctionHouse purchase call in $f"
+    # Security & ToS check 2: Zero automated Auction House purchasing/posting calls
+    if ($clean -match 'C_AuctionHouse\s*\.\s*(PlaceBid|ConfirmCommoditiesPurchase|StartCommoditiesPurchase|PostCommodity|PostItem)\s*\(') {
+        Fail "Forbidden automated C_AuctionHouse transaction call in $f"
     } else {
-        Pass "ToS-compliant (zero automated AH purchase calls) in $f"
+        Pass "ToS-compliant (zero automated AH buy/post calls) in $f"
+    }
+
+    # Security & ToS check 3: Zero unattended repeating timers (C_Timer.NewTicker / periodic AFK scan loops)
+    if ($clean -match 'C_Timer\s*\.\s*NewTicker\b|\bReschedulePeriodicScan\b|\bperiodicScanTimer\b') {
+        Fail "Forbidden unattended repeating timer in $f"
+    } else {
+        Pass "ToS-compliant (zero unattended AFK timer loops) in $f"
     }
 }
 

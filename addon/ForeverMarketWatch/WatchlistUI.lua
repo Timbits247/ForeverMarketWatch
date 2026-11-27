@@ -715,7 +715,7 @@ end
 
 local function CreateSettingsPopover()
     local pop = NS.CreatePanel(UIParent, nil, NS.COLORS.BG_DARK, NS.COLORS.BORDER_ACCENT, false)
-    pop:SetSize(288, 272)
+    pop:SetSize(288, 244)
     pop:SetFrameStrata("FULLSCREEN_DIALOG")
     pop:SetFrameLevel(200)
     pop:EnableMouse(true)
@@ -729,47 +729,37 @@ local function CreateSettingsPopover()
     local autoBtn = NS.CreateButton(pop, "", 260, 22, false)
     autoBtn:SetPoint("TOPLEFT", 14, -36)
 
-    local intervalBtn = NS.CreateButton(pop, "", 260, 22, false)
-    intervalBtn:SetPoint("TOPLEFT", 14, -64)
-
     local cdLbl = pop:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    cdLbl:SetPoint("TOPLEFT", 16, -96)
-    cdLbl:SetText("Open Cooldown (minutes):")
+    cdLbl:SetPoint("TOPLEFT", 16, -68)
+    cdLbl:SetText("Open Cooldown (min, >=15):")
 
     local cdBox, cdEB = NS.CreateEditBox(pop, 54, 22, "15")
-    cdBox:SetPoint("TOPRIGHT", -14, -92)
+    cdBox:SetPoint("TOPRIGHT", -14, -64)
 
     local passiveBtn = NS.CreateButton(pop, "", 260, 22, false)
-    passiveBtn:SetPoint("TOPLEFT", 14, -124)
+    passiveBtn:SetPoint("TOPLEFT", 14, -96)
 
     local seedBtn = NS.CreateButton(pop, "Restore All Profession Materials", 260, 22, false)
-    seedBtn:SetPoint("TOPLEFT", 14, -152)
+    seedBtn:SetPoint("TOPLEFT", 14, -124)
 
     local demoBtn = NS.CreateButton(pop, "", 260, 22, false)
-    demoBtn:SetPoint("TOPLEFT", 14, -180)
+    demoBtn:SetPoint("TOPLEFT", 14, -152)
 
     local tipTxt = pop:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    tipTxt:SetPoint("TOPLEFT", 14, -208)
-    tipTxt:SetPoint("TOPRIGHT", -14, -208)
+    tipTxt:SetPoint("TOPLEFT", 14, -180)
+    tipTxt:SetPoint("TOPRIGHT", -14, -180)
     tipTxt:SetJustifyH("LEFT")
-    tipTxt:SetText("Tip: Run api-sync\\Setup Blizzard API.bat for live hourly prices even while offline.")
+    tipTxt:SetText("Tip: Hourly Cloud API sync keeps prices updated 24/7 with zero AFK scanning.")
 
     local closeBtn = NS.CreateButton(pop, "Done", 74, 22, true)
     closeBtn:SetPoint("BOTTOMRIGHT", -14, 12)
-
-    local INTERVAL_CYCLE = { 0, 15, 30, 60 }
 
     local function RefreshControls()
         local s = NS.DB:GetSettings()
         autoBtn:SetTextLabel("Auto-Scan on AH Open: " .. (s.autoScanOnOpen and "|cFF38D972ON|r" or "|cFFF55954OFF|r"))
         autoBtn:SetActiveState(s.autoScanOnOpen)
 
-        local iv = tonumber(s.autoScanIntervalMinutes) or 0
-        local ivLabel = (iv > 0) and ("|cFF38D972Every " .. iv .. " min|r") or "|cFFF55954OFF|r"
-        intervalBtn:SetTextLabel("Park-at-AH Auto-Scan: " .. ivLabel)
-        intervalBtn:SetActiveState(iv > 0)
-
-        cdEB:SetText(tostring(s.autoScanCooldownMinutes or 15))
+        cdEB:SetText(tostring(math.max(15, tonumber(s.autoScanCooldownMinutes) or 15)))
 
         passiveBtn:SetTextLabel("Passive Capture: " .. (s.passiveCapture and "|cFF38D972ON|r" or "|cFFF55954OFF|r"))
         passiveBtn:SetActiveState(s.passiveCapture)
@@ -784,22 +774,6 @@ local function CreateSettingsPopover()
         local s = NS.DB:GetSettings()
         s.autoScanOnOpen = not s.autoScanOnOpen
         RefreshControls()
-    end)
-
-    intervalBtn:SetScript("OnClick", function()
-        local s = NS.DB:GetSettings()
-        local cur = tonumber(s.autoScanIntervalMinutes) or 0
-        local nextVal = INTERVAL_CYCLE[1]
-        for i = 1, #INTERVAL_CYCLE do
-            if INTERVAL_CYCLE[i] == cur then
-                nextVal = INTERVAL_CYCLE[(i % #INTERVAL_CYCLE) + 1]
-                break
-            end
-        end
-        s.autoScanIntervalMinutes = nextVal
-        NS.Scanner:ReschedulePeriodicScan()
-        RefreshControls()
-        UI.RefreshWatchlist()
     end)
 
     passiveBtn:SetScript("OnClick", function()
@@ -825,8 +799,11 @@ local function CreateSettingsPopover()
 
     local function SaveCooldown()
         local n = tonumber(cdEB:GetText())
-        if n and n >= 1 and n <= 1440 then
+        if n and n >= 15 and n <= 1440 then
             NS.DB:GetSettings().autoScanCooldownMinutes = math.floor(n)
+        else
+            NS.DB:GetSettings().autoScanCooldownMinutes = 15
+            cdEB:SetText("15")
         end
     end
 

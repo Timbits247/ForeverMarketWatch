@@ -104,3 +104,12 @@ ForeverMarketWatch includes a native Windows PowerShell sync tool (`api-sync\`) 
 | `/fmw add <link or id>` | Add an item directly to your watchlist |
 | `/fmw demo` | Toggle isolated 90-day Demo Preview mode |
 | `/fmw test` | Run the in-game unit self-test suite |
+
+---
+
+## 5. Blizzard Legal & Terms of Service Compliance Notice
+
+- **Free & Unobfuscated Add-On**: ForeverMarketWatch is 100% free of charge, open-source, and contains zero paid tiers, advertisements, or obfuscated code, in accordance with the **Blizzard World of Warcraft UI Add-On Development Policy**.
+- **Zero Gameplay Automation**: ForeverMarketWatch never executes automated purchases, bids, auction postings, batch cancellations, or unattended AFK timer scans. Every Auction House purchase, listing, or cancellation requires a direct physical player input inside World of Warcraft.
+- **Official Battle.net Game Data API**: Out-of-game price snapshots use Blizzard's official **Battle.net Developer API** (`oauth.battle.net` / `{region}.api.blizzard.com`) with `If-Modified-Since` caching and write static Lua data files loaded only on login or `/reload` (never reading or modifying game process memory).
+- **Trademark Attribution**: *World of Warcraft* and *Blizzard Entertainment* are trademarks or registered trademarks of Blizzard Entertainment, Inc. in the U.S. and/or other countries. ForeverMarketWatch is an independent community project and is not affiliated with or endorsed by Blizzard Entertainment, Inc.

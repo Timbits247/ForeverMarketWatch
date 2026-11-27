@@ -19,8 +19,6 @@ local waitingForResult = false
 local retryCount = 0
 local itemTimeoutTimer = nil
 local autoScanDelayTimer = nil
-local periodicScanTimer = nil
-local nextAutoScanAt = 0
 local lastViewedItemID = nil
 local pendingBrowseSearchQuery = nil
 local queuedBrowseQueryToSend = nil
@@ -71,35 +69,6 @@ end
 
 function Scanner:GetProgress()
     return scanIndex, scanTotal, currentItemID
-end
-
-function Scanner:GetNextAutoScanSeconds()
-    if not ahOpen or nextAutoScanAt <= 0 then return nil end
-    local rem = nextAutoScanAt - time()
-    return rem > 0 and rem or 0
-end
-
-function Scanner:ReschedulePeriodicScan()
-    periodicScanTimer = CancelTimer(periodicScanTimer)
-    nextAutoScanAt = 0
-    if not ahOpen or NS.DB:IsDemoMode() then return end
-
-    local settings = NS.DB:GetSettings()
-    local intervalMin = tonumber(settings.autoScanIntervalMinutes) or 0
-    if intervalMin <= 0 then return end
-
-    local intervalSec = intervalMin * 60
-    nextAutoScanAt = time() + intervalSec
-    if C_Timer and C_Timer.NewTimer then
-        periodicScanTimer = C_Timer.NewTimer(intervalSec, function()
-            nextAutoScanAt = 0
-            if ahOpen and not isScanning and not NS.DB:IsDemoMode() then
-                Scanner:StartWatchlistScan(true)
-            else
-                Scanner:ReschedulePeriodicScan()
-            end
-        end)
-    end
 end
 
 --------------------------------------------------------------------------------
@@ -400,11 +369,6 @@ local function FinishScan(reason)
         NS.Print(string.format("Auto-scan updated %d items.", completed))
     end
     NS:FireCallback("SCAN_STATE_CHANGED", false, completed, total, reason)
-
-    -- Schedule next periodic auto-scan while standing at the AH
-    if ahOpen and reason ~= "AH_CLOSED" then
-        Scanner:ReschedulePeriodicScan()
-    end
 end
 
 local function AdvanceQueue()
@@ -1029,15 +993,13 @@ local function OnAuctionHouseOpened()
 
     autoScanDelayTimer = CancelTimer(autoScanDelayTimer)
     local settings = NS.DB:GetSettings()
-    local startedAuto = false
     -- Skip in-game auto-scan if external Blizzard API already synced recently (<65 min)
     local apiFresh = (time() - (NS.DB:GetExternalSyncTimestamp() or 0)) < 3900
     if settings.autoScanOnOpen and not apiFresh and not NS.DB:IsDemoMode() then
         local market = NS.DB:GetActiveMarket()
-        local cooldownSec = math.max(1, settings.autoScanCooldownMinutes or 15) * 60
+        local cooldownSec = math.max(15, settings.autoScanCooldownMinutes or 15) * 60
         local lastAuto = market.lastAutoScan or 0
         if (time() - lastAuto) >= cooldownSec and #NS.DB:GetWatchedItemIDs() > 0 then
-            startedAuto = true
             if C_Timer and C_Timer.NewTimer then
                 autoScanDelayTimer = C_Timer.NewTimer(AUTO_SCAN_DELAY_SECONDS, function()
                     if ahOpen and not isScanning then
@@ -1046,10 +1008,6 @@ local function OnAuctionHouseOpened()
                 end)
             end
         end
-    end
-
-    if not startedAuto then
-        Scanner:ReschedulePeriodicScan()
     end
 end
 
@@ -1061,8 +1019,6 @@ local function OnAuctionHouseClosed()
     lastSearchResultRows = nil
     browseSearchTimeoutTimer = CancelTimer(browseSearchTimeoutTimer)
     autoScanDelayTimer = CancelTimer(autoScanDelayTimer)
-    periodicScanTimer = CancelTimer(periodicScanTimer)
-    nextAutoScanAt = 0
     if isScanning then
         FinishScan("AH_CLOSED")
     end

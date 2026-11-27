@@ -56,3 +56,9 @@ This drops a tiny ~10 KB **`ForeverMarketWatch-Installer.zip`** directly into yo
 > 3. **Restart WoW: Forever** once — then click the gold coin minimap icon, type `/fmw`, or click the **MarketWatch** tab at the AH!
 >
 > **That's it!** You can delete the ZIP after installing — a silent background updater now keeps both your **hourly AH prices** and **addon beta updates** up to date every 15 minutes with zero popups and zero extra clicks. (Run `Uninstall Auto-Updates.bat` anytime to remove it.)
+
+---
+
+## Blizzard Attribution & Developer API Compliance
+
+*World of Warcraft* and *Blizzard Entertainment* are trademarks or registered trademarks of Blizzard Entertainment, Inc. in the U.S. and/or other countries. ForeverMarketWatch is completely free, non-commercial, and not affiliated with or endorsed by Blizzard Entertainment, Inc. Cloud sync uses the official Battle.net Game Data API strictly within published rate limits (`If-Modified-Since` hourly caching) while keeping all API credentials private inside encrypted GitHub Secrets.
