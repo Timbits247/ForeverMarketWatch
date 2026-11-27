@@ -25,9 +25,21 @@ Write-Host "  3. Copy the Client ID and Client Secret below." -ForegroundColor G
 Write-Host ""
 
 $clientId = (Read-Host "Enter Battle.net Client ID").Trim()
-$clientSecret = (Read-Host "Enter Battle.net Client Secret").Trim()
-$region = (Read-Host "Enter Region (us / eu / tw) [default: us]").Trim().ToLower()
+$secSecret = Read-Host "Enter Battle.net Client Secret" -AsSecureString
+$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secSecret)
+try {
+    $clientSecret = ([Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)).Trim()
+} finally {
+    if ($bstr -ne [IntPtr]::Zero) {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+}
+$region = (Read-Host "Enter Region (us / eu / kr / tw) [default: us]").Trim().ToLower()
 if (-not $region) { $region = "us" }
+if ($region -notin @("us", "eu", "kr", "tw")) {
+    Write-Error "Invalid region '$region'. Expected one of: us, eu, kr, tw."
+    exit 1
+}
 
 if (-not $clientId -or -not $clientSecret) {
     Write-Error "Client ID and Client Secret are required."
@@ -160,8 +172,14 @@ $cfgObj = [ordered]@{
     trackAllItems = $false
 }
 
-$cfgObj | ConvertTo-Json -Depth 5 | Set-Content -Path $ConfigPath -Encoding UTF8
-Write-Host "`nSaved config to: $ConfigPath" -ForegroundColor Green
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($ConfigPath, ($cfgObj | ConvertTo-Json -Depth 5), $utf8NoBom)
+try {
+    & icacls $ConfigPath /inheritance:r /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(F)" "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" | Out-Null
+} catch {
+    Write-Host "Warning: Could not restrict NTFS ACLs on api-config.json: $_" -ForegroundColor Yellow
+}
+Write-Host "`nSaved config (restricted to your Windows user) at: $ConfigPath" -ForegroundColor Green
 
 # 5. Run first sync right now
 Write-Host "`nRunning initial Blizzard API sync..." -ForegroundColor Cyan

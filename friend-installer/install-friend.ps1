@@ -30,6 +30,11 @@ if (-not $rawBaseUrl -or $rawBaseUrl -match "YOUR_GITHUB_USERNAME") {
     exit 1
 }
 
+if ($rawBaseUrl -notmatch '^https://raw\.githubusercontent\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+$') {
+    Write-Error "Refusing untrusted or non-HTTPS rawBaseUrl in repo-config.json: $rawBaseUrl"
+    exit 1
+}
+
 # 1. Auto-detect World of Warcraft\_forever_ directory
 function Find-WowForeverPath {
     $candidates = New-Object System.Collections.Generic.List[string]

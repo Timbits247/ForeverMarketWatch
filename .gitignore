@@ -1,7 +1,13 @@
 # Keep private Blizzard API credentials and local machine state out of version control
-api-sync/api-config.json
-api-sync/api-history.json
-api-sync/cloud-pull-state.json
-api-sync/sync.log
+api-sync/*.json
+!api-sync/api-config.example.json
+api-sync/*.log
+.env
+.env.*
+*.env
+*secret*
+*credential*
+*.bak
+*.tmp
 wow-path.txt
 dist/

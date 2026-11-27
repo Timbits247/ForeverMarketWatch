@@ -6,8 +6,38 @@
 local ADDON_NAME, NS = ...
 
 NS.ADDON_NAME = ADDON_NAME
-NS.VERSION = "2.6.0"
+NS.VERSION = "2.6.1"
 NS.SCHEMA_VERSION = 6
+NS.MAX_COPPER = 99999999999 -- ~10M gold hard safety ceiling (prevents Inf/NaN corruption)
+NS.MAX_QTY    = 1000000
+NS.MAX_VALID_TS = 4102444800 -- 2100-01-01 UTC (guards C localtime() against overflow)
+
+function NS.IsFiniteNumber(n)
+    return type(n) == "number" and n == n and n > -math.huge and n < math.huge
+end
+
+-- Neutralizes untrusted WoW UI escape codes (|T texture bombs, |H fake links, |c color spoofing,
+-- |K protected strings, control chars) before storing or printing external strings.
+function NS.SanitizeText(str, maxLen)
+    if type(str) ~= "string" then return "" end
+    local s = str
+    s = s:gsub("|T.-|t", "")
+    s = s:gsub("|A.-|a", "")
+    s = s:gsub("|K.-|k", "")
+    s = s:gsub("|H.-|h(.-)|h", "%1")
+    s = s:gsub("|c%x%x%x%x%x%x%x%x", "")
+    s = s:gsub("|cn[^:]+:", "")
+    s = s:gsub("|r", "")
+    s = s:gsub("|n", " ")
+    s = s:gsub("|", "")
+    s = s:gsub("[%c]+", " ")
+    s = s:match("^%s*(.-)%s*$") or ""
+    local limit = maxLen or 120
+    if #s > limit then
+        s = s:sub(1, limit)
+    end
+    return s
+end
 
 -- Classic WoW Auction House visual palette (warm parchment/stone + gold/bronze)
 NS.COLORS = {
@@ -305,17 +335,20 @@ end
 -- Plain numbers without units are treated as gold (e.g., "4.5" -> 45000 copper).
 function NS.ParseMoney(text)
     if type(text) == "number" then
-        if text <= 0 then return nil end
+        if not NS.IsFiniteNumber(text) or text <= 0 or text > NS.MAX_COPPER then return nil end
         return math.floor(text + 0.5)
     end
     if type(text) ~= "string" then return nil end
+    if #text > 64 then return nil end
     local s = text:lower():match("^%s*(.-)%s*$")
     if s == "" then return nil end
 
     local plain = tonumber(s)
     if plain then
-        if plain <= 0 then return nil end
-        return math.floor(plain * 10000 + 0.5)
+        if not NS.IsFiniteNumber(plain) or plain <= 0 then return nil end
+        local cop = plain * 10000
+        if not NS.IsFiniteNumber(cop) or cop > NS.MAX_COPPER then return nil end
+        return math.floor(cop + 0.5)
     end
 
     local total = 0
@@ -323,21 +356,27 @@ function NS.ParseMoney(text)
 
     local g = s:match("(%d+%.?%d*)%s*g")
     if g then
-        total = total + (tonumber(g) or 0) * 10000
+        local gv = tonumber(g)
+        if not NS.IsFiniteNumber(gv) then return nil end
+        total = total + gv * 10000
         matched = true
     end
     local sv = s:match("(%d+%.?%d*)%s*s")
     if sv then
-        total = total + (tonumber(sv) or 0) * 100
+        local svv = tonumber(sv)
+        if not NS.IsFiniteNumber(svv) then return nil end
+        total = total + svv * 100
         matched = true
     end
     local cp = s:match("(%d+%.?%d*)%s*c")
     if cp then
-        total = total + (tonumber(cp) or 0)
+        local cpv = tonumber(cp)
+        if not NS.IsFiniteNumber(cpv) then return nil end
+        total = total + cpv
         matched = true
     end
 
-    if not matched or total <= 0 then
+    if not matched or not NS.IsFiniteNumber(total) or total <= 0 or total > NS.MAX_COPPER then
         return nil
     end
     return math.floor(total + 0.5)
@@ -366,10 +405,14 @@ local dayTsCache = {}
 local dayTsCacheCount = 0
 
 function NS.DayKeyFromTimestamp(ts)
-    if not ts then return 0 end
+    if not NS.IsFiniteNumber(ts) or ts < 0 or ts > NS.MAX_VALID_TS then return 0 end
+    ts = math.floor(ts)
     local cached = dayKeyCache[ts]
     if cached then return cached end
-    local d = date("*t", ts)
+    local ok, d = pcall(date, "*t", ts)
+    if not ok or type(d) ~= "table" or not d.year or not d.month or not d.day then
+        return 0
+    end
     local key = (d.year * 10000) + (d.month * 100) + d.day
     if dayKeyCacheCount >= 8192 then
         dayKeyCache = {}
@@ -381,13 +424,17 @@ function NS.DayKeyFromTimestamp(ts)
 end
 
 function NS.TimestampFromDayKey(dayKey)
-    if not dayKey then return 0 end
+    dayKey = tonumber(dayKey)
+    if not NS.IsFiniteNumber(dayKey) or dayKey < 19700101 or dayKey > 21000101 then return 0 end
+    dayKey = math.floor(dayKey)
     local cached = dayTsCache[dayKey]
     if cached then return cached end
     local year = math.floor(dayKey / 10000)
     local month = math.floor((dayKey % 10000) / 100)
     local day = dayKey % 100
-    local ts = time({ year = year, month = month, day = day, hour = 12, min = 0, sec = 0 })
+    if month < 1 or month > 12 or day < 1 or day > 31 then return 0 end
+    local ok, ts = pcall(time, { year = year, month = month, day = day, hour = 12, min = 0, sec = 0 })
+    if not ok or not NS.IsFiniteNumber(ts) then return 0 end
     if dayTsCacheCount >= 2048 then
         dayTsCache = {}
         dayTsCacheCount = 0

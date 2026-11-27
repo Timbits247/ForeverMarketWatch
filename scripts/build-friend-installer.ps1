@@ -25,9 +25,16 @@ if (-not (Test-Path $ReleaseDir)) {
     New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
 }
 
-$addonFiles = Get-ChildItem -Path $AddonDir -File |
-    Where-Object { $_.Extension -in @(".lua", ".toc") } |
-    Sort-Object Name
+function Get-NormalizedLfBytes([string]$Path) {
+    $iso = [System.Text.Encoding]::GetEncoding("iso-8859-1")
+    $s = $iso.GetString([System.IO.File]::ReadAllBytes($Path)).Replace("`r`n", "`n")
+    return $iso.GetBytes($s)
+}
+
+$addonFilesUnsorted = @(Get-ChildItem -Path $AddonDir -File | Where-Object { $_.Extension -in @(".lua", ".toc") })
+$sortedNames = New-Object System.Collections.Generic.List[string]
+foreach ($item in $addonFilesUnsorted) { $sortedNames.Add($item.Name) }
+$sortedNames.Sort([System.StringComparer]::Ordinal)
 
 $tocPath = Join-Path $AddonDir "ForeverMarketWatch.toc"
 $version = "2.1.0"
@@ -36,6 +43,7 @@ if (Test-Path $tocPath) {
     if ($vLine -and $Matches[1]) { $version = $Matches[1].Trim() }
 }
 
+$sha = [System.Security.Cryptography.SHA256]::Create()
 $feedPath = Join-Path $AddonDir "MarketFeedData.lua"
 $feedSyncedAt = 0
 $feedHash = ""
@@ -44,16 +52,16 @@ if (Test-Path $feedPath) {
     if ($head -match 'syncedAt\s*=\s*(\d+)') {
         $feedSyncedAt = [long]$Matches[1]
     }
-    $feedHash = (Get-FileHash -Path $feedPath -Algorithm SHA256).Hash.ToLower().Substring(0, 16)
+    $feedBytes = Get-NormalizedLfBytes $feedPath
+    $feedHash = ([BitConverter]::ToString($sha.ComputeHash($feedBytes)) -replace "-", "").ToLower().Substring(0, 16)
 }
 
-$sha = [System.Security.Cryptography.SHA256]::Create()
 $ms  = New-Object System.IO.MemoryStream
 $nul = [byte[]]@(0)
-foreach ($f in $addonFiles) {
-    if ($f.Name -eq "MarketFeedData.lua") { continue }
-    $nameBytes = [Text.Encoding]::UTF8.GetBytes($f.Name)
-    $fileBytes = [IO.File]::ReadAllBytes($f.FullName)
+foreach ($fName in $sortedNames) {
+    if ($fName -eq "MarketFeedData.lua") { continue }
+    $nameBytes = [Text.Encoding]::UTF8.GetBytes($fName)
+    $fileBytes = Get-NormalizedLfBytes (Join-Path $AddonDir $fName)
     $ms.Write($nameBytes, 0, $nameBytes.Length)
     $ms.Write($nul, 0, 1)
     $ms.Write($fileBytes, 0, $fileBytes.Length)
@@ -64,7 +72,7 @@ $addonHash = ([BitConverter]::ToString($addonHashBytes) -replace "-", "").ToLowe
 $ms.Dispose()
 $sha.Dispose()
 
-$fileNames = @($addonFiles | ForEach-Object { $_.Name })
+$fileNames = @($sortedNames)
 $manifestObj = [ordered]@{
     addonName    = "ForeverMarketWatch"
     addonVersion = $version
@@ -74,7 +82,8 @@ $manifestObj = [ordered]@{
     generatedAt  = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     files        = $fileNames
 }
-$manifestObj | ConvertTo-Json -Depth 4 | Set-Content -Path $ManifestOut -Encoding UTF8
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($ManifestOut, ($manifestObj | ConvertTo-Json -Depth 4) + "`n", $utf8NoBom)
 Write-Host "Updated release/manifest.json (v$version, addonHash=$addonHash, feedSyncedAt=$feedSyncedAt, $($fileNames.Count) files)." -ForegroundColor Green
 
 if ($ManifestOnly) {

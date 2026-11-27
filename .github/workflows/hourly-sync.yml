@@ -30,6 +30,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -51,8 +52,9 @@ jobs:
           BNET_REGION: ${{ vars.BNET_REGION || 'us' }}
           BNET_RULESET_ID: ${{ vars.BNET_RULESET_ID || '2' }}
           BNET_HOUSES: ${{ vars.BNET_HOUSES || '113:Horde,110:Alliance' }}
+          FORCE_SYNC: ${{ inputs.force }}
         run: |
-          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+          if [ "$FORCE_SYNC" = "true" ]; then
             python3 cloud-sync/sync_blizzard_ah.py --force
           else
             python3 cloud-sync/sync_blizzard_ah.py

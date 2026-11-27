@@ -68,7 +68,16 @@ try {
         }
     }
 
-    git add .
+    # Stage explicit tracked project paths only (never blind 'git add .' which could stage stray local secrets)
+    git add -- "addon/ForeverMarketWatch" "release/manifest.json" "friend-installer" "scripts" "cloud-sync/sync_blizzard_ah.py" ".github/workflows" ".gitignore" "install-addon.ps1" "ADDON_SETUP.md" "CLOUD_SYNC_SETUP.md" "Publish Update.bat"
+
+    # Security pre-commit check: block accidental staging of credentials
+    $stagedNames = git diff --cached --name-only
+    if ($stagedNames -match 'api-config\.json|\.env|secret|credential') {
+        git reset
+        Write-Error "SECURITY ABORT: Credential-like filename detected in staged changes ($stagedNames)."
+        exit 1
+    }
     git commit -m $Message
     git push origin main
     if ($LASTEXITCODE -ne 0) {

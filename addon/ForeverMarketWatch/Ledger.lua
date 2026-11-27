@@ -44,12 +44,31 @@ local function SafeGetMoney()
     return (GetMoney and GetMoney()) or 0
 end
 
+local function IsSameRealmCharacter(rawName)
+    if type(rawName) ~= "string" or rawName == "" then return false, "" end
+    local clean = NS.SanitizeText(rawName, 64)
+    local shortName, realmSuffix = clean:match("^([^%-]+)%-(.+)$")
+    if not shortName then
+        return true, clean
+    end
+    local myNorm = (GetNormalizedRealmName and GetNormalizedRealmName()) or ""
+    local myRaw = (GetRealmName and GetRealmName()) or ""
+    local myStripped = myRaw:gsub("%s+", "")
+    local rStripped = realmSuffix:gsub("%s+", "")
+    if (myNorm ~= "" and rStripped:lower() == myNorm:lower())
+        or (myStripped ~= "" and rStripped:lower() == myStripped:lower())
+    then
+        return true, shortName
+    end
+    return false, shortName
+end
+
 local function AnnounceBuy(rec)
     if not ShouldAnnounce() or not rec then return end
     NS.Print(string.format(
         "|cFF42A8FA[BUY]|r %dx %s @ %s (%s total)",
         rec.qty or 1,
-        rec.name or "Item",
+        NS.SanitizeText(rec.name or "Item", 80),
         NS.FormatMoney(rec.unitPrice or 0, true),
         NS.FormatMoney(rec.netTotal or rec.gross or 0, true)
     ))
@@ -60,9 +79,9 @@ local function AnnounceFee(rec)
     NS.Print(string.format(
         "|cFFFFA030[FEE]|r %dx %s — lost %s deposit (%s)",
         rec.qty or 1,
-        rec.name or "Item",
+        NS.SanitizeText(rec.name or "Item", 80),
         NS.FormatMoney(rec.ahCut or rec.netTotal or 0, true),
-        rec.source or "EXPIRED"
+        NS.SanitizeText(rec.source or "EXPIRED", 24)
     ))
 end
 
@@ -70,8 +89,8 @@ local function AnnounceTransfer(fromChar, toChar, amountCopper)
     if not ShouldAnnounce() then return end
     NS.Print(string.format(
         "|cFFFFD100[TRANSFER]|r %s -> %s: %s (alt-to-alt transfer)",
-        fromChar or "Alt",
-        toChar or "Alt",
+        NS.SanitizeText(fromChar or "Alt", 32),
+        NS.SanitizeText(toChar or "Alt", 32),
         NS.FormatMoney(amountCopper or 0, true)
     ))
 end
@@ -94,12 +113,13 @@ end
 
 local function AnnounceSale(rec)
     if not ShouldAnnounce() or not rec then return end
+    local safeName = NS.SanitizeText(rec.name or "Item", 80)
     if rec.profit ~= nil then
         local clr = (rec.profit >= 0) and "|cFF38D972+" or "|cFFF55954"
         NS.Print(string.format(
             "|cFF38D972[SELL]|r %dx %s for %s net (%s%s|r profit)",
             rec.qty or 1,
-            rec.name or "Item",
+            safeName,
             NS.FormatMoney(rec.netTotal or 0, true),
             clr,
             NS.FormatMoney(rec.profit, true)
@@ -108,7 +128,7 @@ local function AnnounceSale(rec)
         NS.Print(string.format(
             "|cFF38D972[SELL]|r %dx %s for %s net (no tracked cost basis)",
             rec.qty or 1,
-            rec.name or "Item",
+            safeName,
             NS.FormatMoney(rec.netTotal or 0, true)
         ))
     end
@@ -252,15 +272,18 @@ local function RefreshInboxSnapshot()
     local numItems = GetInboxNumItems() or 0
     for i = 1, numItems do
         local invoiceType, itemName, playerName, bid, buyout, deposit, consignment, _, _, _, invCount, commerceAuction = GetInboxInvoiceInfo(i)
-        local _, _, sender, subject, money, _, _, hasItem = GetInboxHeaderInfo(i)
-        local subjLower = (type(subject) == "string") and subject:lower() or ""
-        local senderClean = (type(sender) == "string") and sender:gsub("%-.*$", "") or ""
+        local _, _, sender, subject, money, codAmount, _, hasItem = GetInboxHeaderInfo(i)
+        local safeSubject = NS.SanitizeText(subject or "", 120)
+        local subjLower = safeSubject:lower()
+        local sameRealm, senderClean = IsSameRealmCharacter(sender)
+        local isCod = (tonumber(codAmount) or 0) > 0
 
-        local isExpiredAHMail = (invoiceType == nil)
+        local isExpiredAHMail = (invoiceType == nil) and (not isCod)
             and ((hasItem and hasItem > 0) or (GetInboxItemLink and GetInboxItemLink(i, 1) ~= nil))
             and (subjLower:find("expired", 1, true) ~= nil or subjLower:find("cancelled", 1, true) ~= nil or subjLower:find("canceled", 1, true) ~= nil)
 
-        local isKnownSender = (invoiceType == nil) and ((tonumber(money) or 0) > 0) and senderClean ~= "" and NS.DB:IsKnownCharacter(senderClean)
+        local isKnownSender = (invoiceType == nil) and (not isCod) and sameRealm
+            and ((tonumber(money) or 0) > 0) and senderClean ~= "" and NS.DB:IsKnownCharacter(senderClean)
 
         if invoiceType == "seller" or invoiceType == "buyer" or isExpiredAHMail or isKnownSender then
             local firstLink = nil
@@ -294,10 +317,12 @@ local function RefreshInboxSnapshot()
             end
 
             local itemID = (firstLink and NS.Compat.ParseItemID(firstLink)) or attachItemID or nil
-            local resolvedName = (itemName and itemName ~= "" and itemName) or attachName or ""
+            local rawResolvedName = (itemName and itemName ~= "" and itemName) or attachName or ""
+            local resolvedName = NS.SanitizeText(rawResolvedName, 100)
+            local safePlayer = NS.SanitizeText(playerName or senderClean, 48)
             local qty = (totalAttachCount > 0 and totalAttachCount)
                 or (tonumber(invCount) and tonumber(invCount) > 0 and tonumber(invCount))
-                or ParseQuantityFromSubject(subject)
+                or ParseQuantityFromSubject(safeSubject)
 
             local maxStack = (itemID and C_Item and C_Item.GetItemMaxStackSizeByID and C_Item.GetItemMaxStackSizeByID(itemID)) or 1
             local isCommodityMail = (commerceAuction == true) or (attachSlots > 1) or (maxStack > 1)
@@ -310,9 +335,9 @@ local function RefreshInboxSnapshot()
                 itemID      = itemID,
                 itemName    = resolvedName,
                 icon        = attachIcon,
-                playerName  = playerName or senderClean,
+                playerName  = safePlayer,
                 sender      = senderClean,
-                subject     = subject or "",
+                subject     = safeSubject,
                 bid         = tonumber(bid) or 0,
                 buyout      = tonumber(buyout) or 0,
                 deposit     = tonumber(deposit) or 0,
@@ -699,12 +724,15 @@ function Ledger:Init()
                 if NS.DB:IsDemoMode() or not GetSendMailMoney then return end
                 local money = tonumber(GetSendMailMoney()) or 0
                 if money > 0 and type(recipient) == "string" and recipient ~= "" then
-                    local isKnown, canonName = NS.DB:IsKnownCharacter(recipient)
-                    if isKnown then
-                        local me = (UnitName and UnitName("player")) or "Alt"
-                        local ok = NS.DB:RecordGoldTransfer(me, canonName, money)
-                        if ok then
-                            AnnounceTransfer(me, canonName, money)
+                    local sameRealm, shortRecipient = IsSameRealmCharacter(recipient)
+                    if sameRealm and shortRecipient ~= "" then
+                        local isKnown, canonName = NS.DB:IsKnownCharacter(shortRecipient)
+                        if isKnown then
+                            local me = (UnitName and UnitName("player")) or "Alt"
+                            local ok = NS.DB:RecordGoldTransfer(me, canonName, money)
+                            if ok then
+                                AnnounceTransfer(me, canonName, money)
+                            end
                         end
                     end
                 end

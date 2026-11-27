@@ -171,7 +171,8 @@ function DB:MergeExternalFeed(feedOverride, marketOverride)
 
     for itemID, extHist in pairs(houseData) do
         local idNum = tonumber(itemID)
-        if idNum and idNum > 0 and type(extHist) == "table" then
+        if idNum and NS.IsFiniteNumber(idNum) and idNum > 0 and idNum <= 99999999 and type(extHist) == "table" then
+            idNum = math.floor(idNum)
             local hist = market.history[idNum]
             if type(hist) ~= "table" then
                 hist = { intraday = {}, daily = {}, lastScan = 0 }
@@ -184,24 +185,32 @@ function DB:MergeExternalFeed(feedOverride, marketOverride)
             if type(extHist.intraday) == "table" then
                 for i = 1, #extHist.intraday do
                     local ep = extHist.intraday[i]
-                    if type(ep) == "table" and ep[1] and ep[2] and ep[2] > 0 then
+                    if type(ep) == "table"
+                        and NS.IsFiniteNumber(ep[1]) and ep[1] > 0 and ep[1] <= NS.MAX_VALID_TS
+                        and NS.IsFiniteNumber(ep[2]) and ep[2] > 0 and ep[2] <= NS.MAX_COPPER
+                    then
+                        local pTs  = math.floor(ep[1])
+                        local pMin = math.floor(ep[2])
+                        local pAvg = (NS.IsFiniteNumber(ep[3]) and ep[3] > 0) and math.min(NS.MAX_COPPER, math.floor(ep[3])) or pMin
+                        local pMax = (NS.IsFiniteNumber(ep[4]) and ep[4] > 0) and math.min(NS.MAX_COPPER, math.floor(ep[4])) or pMin
+                        local pQty = (NS.IsFiniteNumber(ep[5]) and ep[5] >= 0) and math.min(NS.MAX_QTY, math.floor(ep[5])) or 0
                         local duplicate = false
                         for j = 1, #hist.intraday do
-                            if math.abs(hist.intraday[j][1] - ep[1]) < INTRADAY_MERGE_WINDOW then
+                            if math.abs(hist.intraday[j][1] - pTs) < INTRADAY_MERGE_WINDOW then
                                 -- Refresh existing bucket with API point if timestamps match closely
-                                if ep[1] >= hist.intraday[j][1] then
-                                    hist.intraday[j][1] = ep[1]
-                                    hist.intraday[j][2] = ep[2]
-                                    hist.intraday[j][3] = ep[3] or ep[2]
-                                    hist.intraday[j][4] = math.max(hist.intraday[j][4] or ep[2], ep[4] or ep[2])
-                                    hist.intraday[j][5] = ep[5] or 0
+                                if pTs >= hist.intraday[j][1] then
+                                    hist.intraday[j][1] = pTs
+                                    hist.intraday[j][2] = pMin
+                                    hist.intraday[j][3] = pAvg
+                                    hist.intraday[j][4] = math.max(hist.intraday[j][4] or pMin, pMax)
+                                    hist.intraday[j][5] = pQty
                                 end
                                 duplicate = true
                                 break
                             end
                         end
                         if not duplicate then
-                            table.insert(hist.intraday, { ep[1], ep[2], ep[3] or ep[2], ep[4] or ep[2], ep[5] or 0 })
+                            table.insert(hist.intraday, { pTs, pMin, pAvg, pMax, pQty })
                         end
                     end
                 end
@@ -545,16 +554,23 @@ end
 
 function DB:LogInvestmentBuy(itemID, addQty, unitCostCopper, holderAlt, notes, skipLedger)
     itemID = tonumber(itemID)
-    addQty = math.floor(tonumber(addQty) or 0)
-    unitCostCopper = math.floor((tonumber(unitCostCopper) or 0) + 0.5)
-    if not itemID or addQty <= 0 or unitCostCopper <= 0 then
+    local rawQty = tonumber(addQty)
+    local rawCost = tonumber(unitCostCopper)
+    if not NS.IsFiniteNumber(itemID) or not NS.IsFiniteNumber(rawQty) or not NS.IsFiniteNumber(rawCost) then
+        return false, "Enter a valid quantity and unit cost."
+    end
+    addQty = math.floor(rawQty)
+    unitCostCopper = math.floor(rawCost + 0.5)
+    if itemID <= 0 or addQty <= 0 or addQty > NS.MAX_QTY or unitCostCopper <= 0 or unitCostCopper > NS.MAX_COPPER then
         return false, "Enter a valid quantity and unit cost."
     end
 
     local market = self:GetActiveMarket()
     local existing = market.investments[itemID]
     local defaultHolder = (UnitName and UnitName("player")) or "Alt"
-    local holder = (type(holderAlt) == "string" and holderAlt:match("^%s*(.-)%s*$") ~= "") and holderAlt:match("^%s*(.-)%s*$") or nil
+    local cleanHolder = NS.SanitizeText(holderAlt or "", 32)
+    local holder = (cleanHolder ~= "") and cleanHolder or nil
+    local cleanNotes = NS.SanitizeText(notes or "", 120)
     local liveName, _, liveQual, _, _, _, _, _, _, liveIcon = NS.Compat.GetItemInfo(itemID)
     local now = (time and time()) or 0
 
@@ -565,7 +581,7 @@ function DB:LogInvestmentBuy(itemID, addQty, unitCostCopper, holderAlt, notes, s
             totalCost      = addQty * unitCostCopper,
             realizedProfit = 0,
             holder         = holder or defaultHolder,
-            notes          = (type(notes) == "string") and notes:match("^%s*(.-)%s*$") or "",
+            notes          = cleanNotes,
             name           = liveName,
             icon           = liveIcon,
             quality        = liveQual,
@@ -694,7 +710,7 @@ end
 
 function DB:SaveCharacterGroup(groupName, membersMap)
     if type(groupName) ~= "string" then return false, "Enter a group name." end
-    local clean = groupName:match("^%s*(.-)%s*$")
+    local clean = NS.SanitizeText(groupName, 32)
     if clean == "" then return false, "Enter a group name." end
 
     local cleanMembers = {}
@@ -2701,8 +2717,8 @@ end
 
 function DB:AddGroup(groupName)
     if type(groupName) ~= "string" then return false, "Invalid group name." end
-    local clean = groupName:match("^%s*(.-)%s*$")
-    if clean == "" or clean == "All" or clean == "Alerts Only" then
+    local clean = NS.SanitizeText(groupName, 32)
+    if clean == "" or clean == "All" or clean == "Alerts Only" or clean == "ENTIRE_AH" then
         return false, "Reserved or empty group name."
     end
     if self:HasGroup(clean) then
@@ -2716,8 +2732,8 @@ end
 
 function DB:RenameGroup(oldName, newName)
     if type(newName) ~= "string" then return false, "Invalid group name." end
-    local clean = newName:match("^%s*(.-)%s*$")
-    if clean == "" or clean == "All" or clean == "Alerts Only" then
+    local clean = NS.SanitizeText(newName, 32)
+    if clean == "" or clean == "All" or clean == "Alerts Only" or clean == "ENTIRE_AH" then
         return false, "Reserved or empty group name."
     end
     local exists, idx = self:HasGroup(oldName)

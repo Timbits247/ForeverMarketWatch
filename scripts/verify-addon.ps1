@@ -207,6 +207,20 @@ foreach ($f in $LuaFiles) {
     } else {
         Pass "Valid WoW Line:SetStartPoint/SetEndPoint signature in $f"
     }
+
+    # Security check 1: Zero dynamic Lua code evaluation
+    if ($clean -match '\b(loadstring|RunScript)\b') {
+        Fail "Forbidden dynamic code execution (loadstring/RunScript) in $f"
+    } else {
+        Pass "Zero dynamic code execution in $f"
+    }
+
+    # Security & ToS check 2: Zero automated Auction House purchasing calls
+    if ($clean -match 'C_AuctionHouse\s*\.\s*(PlaceBid|ConfirmCommoditiesPurchase|StartCommoditiesPurchase)\s*\(') {
+        Fail "Forbidden automated C_AuctionHouse purchase call in $f"
+    } else {
+        Pass "ToS-compliant (zero automated AH purchase calls) in $f"
+    }
 }
 
 Write-Host ""

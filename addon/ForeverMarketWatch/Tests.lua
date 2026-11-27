@@ -607,6 +607,21 @@ function NS.RunSelfTests()
     AssertEq("Tender Wolf Meat -> Cooking", NS.Catalog.GetDashboardCategory(12208, { name = "Tender Wolf Meat", group = "Cooking & Fishing" }), "Cooking")
     AssertEq("Free Action Potion in generic group -> Alchemy", NS.Catalog.GetDashboardCategory(5634, { name = "Free Action Potion", group = "Watch list" }), "Alchemy")
 
+    -- 22. Security Hardening Self-Tests (UI escape stripping, money overflow/NaN guards, timestamp bounds)
+    AssertEq("SanitizeText strips texture escape", NS.SanitizeText("Hello|TInterface\\Icons\\INV_Misc_Coin_01:2048:2048|tWorld"), "HelloWorld")
+    AssertEq("SanitizeText strips color & hyperlink escapes", NS.SanitizeText("|cFFFF0000|Hitem:19019::::::::60|h[Thunderfury]|h|r"), "[Thunderfury]")
+    AssertEq("SanitizeText strips named quality color", NS.SanitizeText("|cnIQ4:[Flask]|r"), "[Flask]")
+    AssertEq("SanitizeText strips control chars & caps length", NS.SanitizeText("Line1\r\nLine2", 8), "Line1 Li")
+    AssertEq("ParseMoney rejects infinity overflow 1e309g", NS.ParseMoney("1e309g"), nil)
+    AssertEq("ParseMoney rejects inf literal", NS.ParseMoney("inf"), nil)
+    AssertEq("ParseMoney rejects negative input", NS.ParseMoney("-5g"), nil)
+    AssertEq("ParseMoney rejects above MAX_COPPER", NS.ParseMoney("999999999g"), nil)
+    AssertEq("ParseMoney parses normal g/s/c", NS.ParseMoney("12g 34s 56c"), 123456)
+    AssertEq("DayKeyFromTimestamp rejects negative ts", NS.DayKeyFromTimestamp(-999999), 0)
+    AssertEq("DayKeyFromTimestamp rejects huge ts", NS.DayKeyFromTimestamp(999999999999), 0)
+    AssertEq("DayKeyFromTimestamp rejects math.huge", NS.DayKeyFromTimestamp(math.huge), 0)
+    AssertEq("TimestampFromDayKey rejects out-of-range year", NS.TimestampFromDayKey(99999999), 0)
+
     NS.DB:DeleteCharacterGroup("_TestGroup_")
 
     if failed == 0 then

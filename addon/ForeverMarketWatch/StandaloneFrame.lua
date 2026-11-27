@@ -14,16 +14,39 @@ local minimapButton = nil
 -- Standalone Window (Classic WoW AH Dialog Frame)
 --------------------------------------------------------------------------------
 
+local VALID_ANCHOR_POINTS = {
+    TOPLEFT = true, TOP = true, TOPRIGHT = true,
+    LEFT = true, CENTER = true, RIGHT = true,
+    BOTTOMLEFT = true, BOTTOM = true, BOTTOMRIGHT = true,
+}
+
+local function SanitizeWindowConfig(cfg)
+    cfg = type(cfg) == "table" and cfg or {}
+    local pt = (type(cfg.point) == "string" and VALID_ANCHOR_POINTS[cfg.point]) and cfg.point or "CENTER"
+    local x = NS.IsFiniteNumber(cfg.x) and math.max(-4000, math.min(4000, cfg.x)) or 0
+    local y = NS.IsFiniteNumber(cfg.y) and math.max(-4000, math.min(4000, cfg.y)) or 0
+    local w = NS.IsFiniteNumber(cfg.width) and math.max(820, math.min(1320, cfg.width)) or 920
+    local h = NS.IsFiniteNumber(cfg.height) and math.max(480, math.min(840, cfg.height)) or 580
+    return pt, x, y, w, h
+end
+
 local function SaveWindowGeometry()
     if not windowFrame then return end
     local s = NS.DB:GetSettings()
     local point, _, _, x, y = windowFrame:GetPoint(1)
+    local pt, sx, sy, sw, sh = SanitizeWindowConfig({
+        point  = point,
+        x      = x,
+        y      = y,
+        width  = windowFrame:GetWidth(),
+        height = windowFrame:GetHeight(),
+    })
     s.window = {
-        point  = point or "CENTER",
-        x      = math.floor((x or 0) + 0.5),
-        y      = math.floor((y or 0) + 0.5),
-        width  = math.floor((windowFrame:GetWidth() or 920) + 0.5),
-        height = math.floor((windowFrame:GetHeight() or 580) + 0.5),
+        point  = pt,
+        x      = math.floor(sx + 0.5),
+        y      = math.floor(sy + 0.5),
+        width  = math.floor(sw + 0.5),
+        height = math.floor(sh + 0.5),
     }
 end
 
@@ -46,10 +69,10 @@ function Standalone:GetOrCreateWindow()
         f:SetMaxResize(1320, 840)
     end
 
-    local cfg = NS.DB:GetSettings().window or {}
-    f:SetSize(math.max(820, cfg.width or 920), math.max(480, cfg.height or 580))
+    local pt, x, y, w, h = SanitizeWindowConfig(NS.DB:GetSettings().window)
+    f:SetSize(w, h)
     f:ClearAllPoints()
-    f:SetPoint(cfg.point or "CENTER", UIParent, cfg.point or "CENTER", cfg.x or 0, cfg.y or 0)
+    f:SetPoint(pt, UIParent, pt, x, y)
 
     if UISpecialFrames then
         local already = false
@@ -186,7 +209,8 @@ local function CreateMinimapButton()
     border:SetPoint("TOPLEFT", 0, 0)
     border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
 
-    local angle = NS.DB:GetSettings().minimapAngle or 225
+    local rawAngle = NS.DB:GetSettings().minimapAngle
+    local angle = NS.IsFiniteNumber(rawAngle) and rawAngle or 225
     UpdateMinimapButtonPosition(btn, angle)
 
     btn:SetScript("OnDragStart", function(self)
