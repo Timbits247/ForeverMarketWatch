@@ -508,7 +508,7 @@ function Scanner:StartWatchlistScan(autoTriggered, groupFilter)
     return true
 end
 
-function Scanner:StartDashboardScan()
+function Scanner:StartDashboardScan(customIDs)
     if NS.DB:IsDemoMode() then
         NS.Print("Demo Mode is active. Run /fmw demo to exit Demo Mode before scanning live AH.")
         return false
@@ -521,7 +521,7 @@ function Scanner:StartDashboardScan()
         self:StopScan("REPLACED")
     end
 
-    local ids = NS.DB:GetDashboardPinnedIDs()
+    local ids = (type(customIDs) == "table" and #customIDs > 0) and customIDs or NS.DB:GetDashboardPinnedIDs()
     if #ids == 0 then
         NS.Print("No pinned items or investments on your Dashboard to scan yet.")
         return false

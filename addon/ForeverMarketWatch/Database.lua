@@ -22,6 +22,7 @@ local DEFAULT_SETTINGS = {
     defaultTimeframe        = "30D",
     defaultChartMode        = 2,     -- Start on Price + Bottom Volume so classic stock chart shines immediately
     defaultSort             = "name_asc",
+    dashboardSubTab         = "ALL", -- Active sub-tab on Dashboard ("ALL", "Herbalism", "Mining", "Fishing", "HOLDINGS", etc.)
     minimapAngle            = 225,
     window                  = { point = "CENTER", x = 0, y = 0, width = 920, height = 580 },
 }
@@ -412,8 +413,8 @@ function DB:TogglePin(itemID)
     return nowPinned
 end
 
--- Returns pinned itemIDs & active investments in the user's persisted custom drag order.
-function DB:GetDashboardPinnedIDs()
+-- Returns pinned itemIDs (& active investments unless pinnedOnly=true) in the user's persisted custom drag order.
+function DB:GetDashboardPinnedIDs(pinnedOnly)
     local market = self:GetActiveMarket()
     local pinned = market.pinned or {}
     local investments = market.investments or {}
@@ -463,7 +464,34 @@ function DB:GetDashboardPinnedIDs()
     end
 
     market.pinnedOrder = list
+
+    if pinnedOnly then
+        local onlyPins = {}
+        for i = 1, #list do
+            if pinned[list[i]] then
+                table.insert(onlyPins, list[i])
+            end
+        end
+        return onlyPins
+    end
     return list
+end
+
+-- Returns active held investment itemIDs that are NOT explicitly pinned (shown in Dashboard's Holdings sub-tab).
+function DB:GetUnpinnedHoldingIDs()
+    local full = self:GetDashboardPinnedIDs(false)
+    local market = self:GetActiveMarket()
+    local pinned = market.pinned or {}
+    local investments = market.investments or {}
+    local out = {}
+    for i = 1, #full do
+        local id = full[i]
+        local inv = investments[id]
+        if not pinned[id] and inv and inv.qty and inv.qty > 0 then
+            table.insert(out, id)
+        end
+    end
+    return out
 end
 
 function DB:MovePinnedItem(fromItemID, toItemID)

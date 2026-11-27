@@ -6,7 +6,7 @@
 local ADDON_NAME, NS = ...
 
 NS.ADDON_NAME = ADDON_NAME
-NS.VERSION = "2.5.3"
+NS.VERSION = "2.6.0"
 NS.SCHEMA_VERSION = 6
 
 -- Classic WoW Auction House visual palette (warm parchment/stone + gold/bronze)

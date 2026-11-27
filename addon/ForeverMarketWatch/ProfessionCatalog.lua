@@ -328,6 +328,120 @@ function Catalog.GuessGroupForItem(itemID, itemName)
     return "Flipping"
 end
 
+-- Ordered Dashboard sub-tab & grouped section definitions
+Catalog.DASHBOARD_CATEGORIES = {
+    { id = "Herbalism",           pill = "Herbs",     title = "Herbalism" },
+    { id = "Mining",              pill = "Mining",    title = "Mining — Ores, Bars & Stone" },
+    { id = "Fishing",             pill = "Fishing",   title = "Fishing" },
+    { id = "Skinning",            pill = "Skinning",  title = "Skinning & Leather" },
+    { id = "Tailoring",           pill = "Tailoring", title = "Tailoring & Cloth" },
+    { id = "Enchanting",          pill = "Enchant",   title = "Enchanting" },
+    { id = "Alchemy",             pill = "Alchemy",   title = "Alchemy & Consumables" },
+    { id = "Blacksmithing & Eng", pill = "BS & Eng",  title = "Blacksmithing, Eng & Elementals" },
+    { id = "Cooking",             pill = "Cooking",   title = "Cooking & Meat" },
+}
+
+local KNOWN_FISHING_IDS = {
+    [6358]  = true, -- Oily Blackmouth
+    [6359]  = true, -- Firefin Snapper
+    [13422] = true, -- Stonescale Eel
+    [13759] = true, -- Raw Nightfin Snapper
+    [13755] = true, -- Winter Squid / Raw Winter Squid
+    [13754] = true, -- Raw Glossy Mightfish
+    [6522]  = true, -- Deviate Fish
+    [6657]  = true, -- Savory Deviate Delight
+    [13931] = true, -- Nightfin Soup
+    [13756] = true, -- Raw Summer Bass
+    [13758] = true, -- Raw Redgill
+    [13760] = true, -- Raw Sunscale Salmon
+    [13889] = true, -- Cooked Glossy Mightfish
+    [13893] = true, -- Large Raw Mightfish
+    [13928] = true, -- Grilled Squid
+    [21153] = true, -- Raw Greater Sagefish
+    [21071] = true, -- Raw Sagefish
+    [21072] = true, -- Smoked Sagefish
+    [21217] = true, -- Sagefish Delight
+}
+
+local SPECIFIC_PROFESSION_GROUPS = {
+    ["Herbalism"]           = true,
+    ["Mining"]              = true,
+    ["Skinning"]            = true,
+    ["Tailoring"]           = true,
+    ["Enchanting"]          = true,
+    ["Alchemy"]             = true,
+    ["Blacksmithing & Eng"] = true,
+}
+
+local GENERIC_WATCH_GROUPS = {
+    ["Watch list"] = true,
+    ["Watchlist"]  = true,
+    ["Flipping"]   = true,
+    ["AH Market"]  = true,
+    ["All"]        = true,
+}
+
+function Catalog.IsFishingItem(itemID, itemName)
+    itemID = tonumber(itemID)
+    if itemID and KNOWN_FISHING_IDS[itemID] then
+        return true
+    end
+    local n = (type(itemName) == "string") and itemName:lower() or ""
+    if n == "" then return false end
+    if n:find(" oil", 1, true) then
+        return false -- Keep Blackmouth/Fire/Stonescale Oil in Alchemy
+    end
+    if n:find("snapper", 1, true) or n:find("fish", 1, true) or n:find("squid", 1, true)
+        or n:find("eel", 1, true) or n:find("salmon", 1, true) or n:find("blackmouth", 1, true)
+        or n:find("deviate", 1, true) or n:find("trout", 1, true) or n:find("catfish", 1, true)
+        or n:find("lobster", 1, true) or n:find("clam", 1, true) or n:find("bass", 1, true)
+        or n:find("redgill", 1, true) or n:find("halibut", 1, true)
+    then
+        return true
+    end
+    return false
+end
+
+-- Resolves the clean Dashboard sub-tab category for any pinned or held item.
+-- Splits "Cooking & Fishing" into "Fishing" vs "Cooking", and auto-classifies items
+-- that were placed in generic groups like "Watch list" or "Flipping" (e.g. Frilled Lichen -> Herbalism, Pyrite -> Mining).
+function Catalog.GetDashboardCategory(itemID, watchEntry, fallbackName)
+    itemID = tonumber(itemID)
+    local name = (watchEntry and watchEntry.name) or fallbackName
+    if (not name or name == "") and itemID and NS.Compat and NS.Compat.GetItemInfo then
+        name = NS.Compat.GetItemInfo(itemID)
+    end
+
+    local grp = watchEntry and watchEntry.group or nil
+    if grp == "Herbs" then
+        return "Herbalism"
+    elseif grp == "Fishing" then
+        return "Fishing"
+    elseif grp == "Cooking" then
+        return "Cooking"
+    elseif grp == "Cooking & Fishing" then
+        return Catalog.IsFishingItem(itemID, name) and "Fishing" or "Cooking"
+    elseif grp and SPECIFIC_PROFESSION_GROUPS[grp] then
+        return grp
+    end
+
+    -- Auto-classify from catalog / item name / WoW subclass (handles custom WoW: Forever mats & generic groups)
+    local guessed = Catalog.GuessGroupForItem(itemID, name)
+    if guessed == "Cooking & Fishing" then
+        return Catalog.IsFishingItem(itemID, name) and "Fishing" or "Cooking"
+    elseif guessed and SPECIFIC_PROFESSION_GROUPS[guessed] then
+        return guessed
+    elseif Catalog.IsFishingItem(itemID, name) then
+        return "Fishing"
+    end
+
+    -- Preserve meaningful custom user-created groups (e.g. "Raid Mats", "Consumables")
+    if grp and grp ~= "" and not GENERIC_WATCH_GROUPS[grp] then
+        return grp
+    end
+    return "Other"
+end
+
 -- Searches the built-in profession catalog by partial name or Item ID
 function Catalog.Search(query, limit)
     if type(query) ~= "string" then return {} end

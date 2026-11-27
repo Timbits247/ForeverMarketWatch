@@ -598,6 +598,15 @@ function NS.RunSelfTests()
     AssertEq("Fast row summary early-rejects non-flip as nil", NS.Analytics.GetWatchlistRowSummary(99902, nil, flatHist, "FLIPS", baseNow, 0.05), nil)
     AssertEq("Fast row summary early-rejects flat 30D low as nil", NS.Analytics.GetWatchlistRowSummary(99902, nil, flatHist, "30D", baseNow, 0.05), nil)
 
+    -- 21. Dashboard Profession Sub-Tab Categorizer (Herbs, Mining Ores/Bars, Fishing vs Cooking)
+    AssertEq("Frilled Lichen in generic group -> Herbalism", NS.Catalog.GetDashboardCategory(249399, { name = "Frilled Lichen", group = "Watch list" }), "Herbalism")
+    AssertEq("Pyrite in generic group -> Mining", NS.Catalog.GetDashboardCategory(249391, { name = "Pyrite", group = "Watch list" }), "Mining")
+    AssertEq("Mithril Bar -> Mining", NS.Catalog.GetDashboardCategory(3860, { name = "Mithril Bar", group = "Mining" }), "Mining")
+    AssertEq("Stonescale Eel -> Fishing", NS.Catalog.GetDashboardCategory(13422, { name = "Stonescale Eel", group = "Cooking & Fishing" }), "Fishing")
+    AssertEq("Raw Winter Squid -> Fishing", NS.Catalog.GetDashboardCategory(13755, { name = "Raw Winter Squid", group = "Cooking & Fishing" }), "Fishing")
+    AssertEq("Tender Wolf Meat -> Cooking", NS.Catalog.GetDashboardCategory(12208, { name = "Tender Wolf Meat", group = "Cooking & Fishing" }), "Cooking")
+    AssertEq("Free Action Potion in generic group -> Alchemy", NS.Catalog.GetDashboardCategory(5634, { name = "Free Action Potion", group = "Watch list" }), "Alchemy")
+
     NS.DB:DeleteCharacterGroup("_TestGroup_")
 
     if failed == 0 then
