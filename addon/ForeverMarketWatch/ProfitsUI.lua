@@ -1019,8 +1019,11 @@ function ProfitsUI.Create(parent, onOpenItem, onOpenCharGroups)
         end
 
         -- 2. Sync live player gold snapshot & compute filtered gold + per-item rollups
-        if GetMoney and not NS.DB:IsDemoMode() then
-            NS.DB:RecordCharacterGold(GetMoney(), nil, nil, true)
+        if GetMoney and not NS.DB:IsDemoMode() and not (NS.Ledger and NS.Ledger.IsLoggingOut and NS.Ledger:IsLoggingOut()) then
+            local liveCopper = GetMoney()
+            if liveCopper and liveCopper > 0 then
+                NS.DB:RecordCharacterGold(liveCopper, nil, nil, true)
+            end
         end
 
         local charFilter = (NS.UI and NS.UI.GetCharFilter and NS.UI.GetCharFilter()) or "ALL"

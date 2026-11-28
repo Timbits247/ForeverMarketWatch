@@ -6,8 +6,8 @@
 local ADDON_NAME, NS = ...
 
 NS.ADDON_NAME = ADDON_NAME
-NS.VERSION = "2.6.2"
-NS.SCHEMA_VERSION = 6
+NS.VERSION = "2.6.3"
+NS.SCHEMA_VERSION = 7
 NS.MAX_COPPER = 99999999999 -- ~10M gold hard safety ceiling (prevents Inf/NaN corruption)
 NS.MAX_QTY    = 1000000
 NS.MAX_VALID_TS = 4102444800 -- 2100-01-01 UTC (guards C localtime() against overflow)

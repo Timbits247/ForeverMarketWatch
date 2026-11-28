@@ -14,6 +14,11 @@ NS.Ledger = Ledger
 
 local initialized = false
 local eventFrame = nil
+local isLoggingOut = false
+
+function Ledger:IsLoggingOut()
+    return isLoggingOut
+end
 
 -- Active purchase tracking state
 local pendingCommodity = nil
@@ -411,18 +416,31 @@ local function CommitPendingMailSale(sale)
     end
 end
 
-local function CaptureCurrentGold(silent)
+local function CaptureCurrentGold(silent, fromMoneyEvent)
+    if isLoggingOut then return end
     if NS.DB and NS.DB.RecordCharacterGold and not NS.DB:IsDemoMode() then
         local cur = SafeGetMoney()
+        -- WoW can briefly return 0 from GetMoney() during login/zone-in or teardown events.
+        -- Never overwrite an existing positive balance with 0 unless PLAYER_MONEY fired directly
+        -- (or after a post-load re-check confirms the character really has 0c).
+        if cur == 0 and not fromMoneyEvent then
+            local ch = UnitName and UnitName("player")
+            local mkt = NS.DB.GetActiveMarket and NS.DB:GetActiveMarket()
+            local prev = (ch and mkt and mkt.charGold and mkt.charGold[ch] and mkt.charGold[ch].current) or 0
+            if prev > 0 then
+                return
+            end
+        end
         NS.DB:RecordCharacterGold(cur, nil, nil, silent)
     end
 end
 
 local function OnPlayerMoneyChanged()
+    if isLoggingOut then return end
     local current = SafeGetMoney()
     local delta = current - (lastKnownMoney or current)
     lastKnownMoney = current
-    CaptureCurrentGold(false)
+    CaptureCurrentGold(false, true)
 
     if pendingBid then
         CheckPendingBidMoney()
@@ -755,9 +773,9 @@ function Ledger:Init()
         end
     end
 
-    -- 3. Event listener
+    -- 3. Event listener (wait until PLAYER_ENTERING_WORLD before recording gold;
+    --    GetMoney() can return 0 during PLAYER_LOGIN and ALWAYS returns 0 during PLAYER_LOGOUT)
     lastKnownMoney = SafeGetMoney()
-    CaptureCurrentGold(true)
     eventFrame = CreateFrame("Frame")
     eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
     eventFrame:RegisterEvent("PLAYER_LOGOUT")
@@ -773,10 +791,23 @@ function Ledger:Init()
 
     eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2)
         if event == "PLAYER_ENTERING_WORLD" then
+            isLoggingOut = false
             lastKnownMoney = SafeGetMoney()
-            CaptureCurrentGold(false)
+            if lastKnownMoney > 0 then
+                CaptureCurrentGold(false, false)
+            elseif C_Timer and C_Timer.After then
+                -- Re-verify after world load settles so a brand-new 0c alt or genuinely
+                -- broke character is still recorded without transient loading-screen 0s.
+                C_Timer.After(1.0, function()
+                    if not isLoggingOut then
+                        lastKnownMoney = SafeGetMoney()
+                        CaptureCurrentGold(false, true)
+                    end
+                end)
+            end
         elseif event == "PLAYER_LOGOUT" then
-            CaptureCurrentGold(true)
+            -- Never call GetMoney() during PLAYER_LOGOUT: WoW clears player state and returns 0!
+            isLoggingOut = true
         elseif event == "COMMODITY_PRICE_UPDATED" then
             if pendingCommodity then
                 local up = tonumber(arg1)

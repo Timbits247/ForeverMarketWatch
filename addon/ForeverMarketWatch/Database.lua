@@ -132,6 +132,22 @@ function DB:Init()
         end
     end
 
+    -- One-time v7 gold history repair: strips fake 0c snapshots previously written during
+    -- PLAYER_LOGOUT (where WoW's GetMoney() returns 0) and restores last real balances.
+    if prevSchema > 0 and prevSchema < 7 then
+        local totalRemoved, totalRestored = 0, 0
+        for _, m in pairs(ForeverMarketWatchDB.markets) do
+            if type(m) == "table" and type(m.charGold) == "table" then
+                local r, c = self:CleanGoldLogoutZeros(m)
+                totalRemoved = totalRemoved + (r or 0)
+                totalRestored = totalRestored + (c or 0)
+            end
+        end
+        if totalRemoved > 0 or totalRestored > 0 then
+            NS.Print(string.format("Net Worth repair: removed %d fake logout 0c spike(s) and restored %d alt gold balance(s).", totalRemoved, totalRestored))
+        end
+    end
+
     -- Ensure current market exists, seed profession mats if not yet seeded,
     -- merge any synced Blizzard API feed data, and compact history.
     local market = self:GetActiveMarket()
@@ -1131,6 +1147,75 @@ function DB:RecordCharacterGold(copper, character, ts, silent, marketOverride, i
         NS:FireCallback("DATA_UPDATED", nil, "GOLD_UPDATED")
     end
     return true
+end
+
+-- Removes fake 0c gold snapshots previously recorded during PLAYER_LOGOUT (where WoW's
+-- GetMoney() returns 0) and restores rec.current from the last valid non-zero balance.
+function DB:CleanGoldLogoutZeros(marketOverride)
+    local market = marketOverride or self:GetActiveMarket()
+    if type(market) ~= "table" or type(market.charGold) ~= "table" then
+        return 0, 0
+    end
+
+    local removedCount = 0
+    local restoredChars = 0
+
+    for _, rec in pairs(market.charGold) do
+        if type(rec) == "table" and type(rec.history) == "table" and #rec.history > 0 then
+            local h = rec.history
+            local n = #h
+            local drop = {}
+
+            local i = 1
+            while i <= n do
+                local pt = h[i]
+                local val = (type(pt) == "table") and (tonumber(pt[2]) or 0) or 0
+                if val == 0 then
+                    local runStart = i
+                    while i <= n and type(h[i]) == "table" and (tonumber(h[i][2]) or 0) == 0 do
+                        i = i + 1
+                    end
+                    local runEnd = i - 1
+                    local runLen = runEnd - runStart + 1
+                    local prevVal = (runStart > 1 and type(h[runStart - 1]) == "table") and (tonumber(h[runStart - 1][2]) or 0) or 0
+                    local nextVal = (runEnd < n and type(h[runEnd + 1]) == "table") and (tonumber(h[runEnd + 1][2]) or 0) or 0
+
+                    local isBracketedSpike = (prevVal >= 100 and nextVal >= 100 and runLen <= 2)
+                    local isTrailingLogoutZero = (runEnd == n and prevVal >= 100 and runLen == 1)
+
+                    if isBracketedSpike or isTrailingLogoutZero then
+                        for k = runStart, runEnd do
+                            drop[k] = true
+                            removedCount = removedCount + 1
+                        end
+                    end
+                else
+                    i = i + 1
+                end
+            end
+
+            if next(drop) ~= nil then
+                local kept = {}
+                for k = 1, n do
+                    if not drop[k] then
+                        table.insert(kept, h[k])
+                    end
+                end
+                rec.history = kept
+
+                local lastKept = kept[#kept]
+                if lastKept and (tonumber(rec.current) or 0) == 0 and (tonumber(lastKept[2]) or 0) > 0 then
+                    rec.current = math.floor((tonumber(lastKept[2]) or 0) + 0.5)
+                    restoredChars = restoredChars + 1
+                end
+            end
+        end
+    end
+
+    if (removedCount > 0 or restoredChars > 0) and not marketOverride then
+        NS:FireCallback("DATA_UPDATED", nil, "GOLD_UPDATED")
+    end
+    return removedCount, restoredChars
 end
 
 -- Aggregates per-character liquid gold + Net Worth (Liquid + Active Inventory Est. Value)

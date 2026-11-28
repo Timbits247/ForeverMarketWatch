@@ -622,6 +622,42 @@ function NS.RunSelfTests()
     AssertEq("DayKeyFromTimestamp rejects math.huge", NS.DayKeyFromTimestamp(math.huge), 0)
     AssertEq("TimestampFromDayKey rejects out-of-range year", NS.TimestampFromDayKey(99999999), 0)
 
+    -- 23. Gold History Logout-Zero Cleanup (strips fake PLAYER_LOGOUT 0c cliffs & restores current)
+    local mockLogoutMkt = {
+        charGold = {
+            Timbits = {
+                current = 0,
+                invValue = 150000,
+                updatedAt = baseNow,
+                history = {
+                    { baseNow - 86400, 180000, 150000 },
+                    { baseNow - 80000, 0,      150000 }, -- mid-history PLAYER_LOGOUT 0c spike
+                    { baseNow - 40000, 210000, 150000 },
+                    { baseNow - 1000,  222649, 150000 },
+                    { baseNow - 100,   0,      150000 }, -- trailing PLAYER_LOGOUT 0c spike
+                },
+            },
+            NewAlt = {
+                current = 0,
+                invValue = 0,
+                updatedAt = baseNow,
+                history = {
+                    { baseNow - 3600, 0, 0 },
+                    { baseNow - 60,   0, 0 },
+                },
+            },
+        },
+        investments = {},
+        history = {},
+        charGroups = {},
+    }
+    local zRem, zRest = NS.DB:CleanGoldLogoutZeros(mockLogoutMkt)
+    AssertEq("Logout zero cleanup removed 2 fake spikes", zRem, 2)
+    AssertEq("Logout zero cleanup restored 1 alt balance", zRest, 1)
+    AssertEq("Timbits current restored to 22g 26s 49c", mockLogoutMkt.charGold.Timbits.current, 222649)
+    AssertEq("Timbits history kept 3 real points", #mockLogoutMkt.charGold.Timbits.history, 3)
+    AssertEq("Brand-new 0c alt history preserved", #mockLogoutMkt.charGold.NewAlt.history, 2)
+
     NS.DB:DeleteCharacterGroup("_TestGroup_")
 
     if failed == 0 then
